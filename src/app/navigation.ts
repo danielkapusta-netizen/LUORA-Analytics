@@ -1,6 +1,7 @@
 import {
   BarChart3,
   BadgePercent,
+  Calculator,
   Boxes,
   LayoutDashboard,
   LineChart,
@@ -68,6 +69,12 @@ export const navigation: NavSection[] = [
         label: 'Pricing',
         icon: BadgePercent,
         description: 'Target prices, simulator, and margin health',
+      },
+      {
+        to: '/calculator',
+        label: 'Margin Calculator',
+        icon: Calculator,
+        description: 'Check a product before you buy it',
       },
       {
         to: '/trends',

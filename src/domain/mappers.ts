@@ -54,9 +54,22 @@ export function mapTransaction(raw: RawTransaction, index: number): LineItem {
   // (Checked: its ratio across matched pairs is noisy, not a clean multiple.)
   const shipmentOriginal = toNumberOr(raw.shipment, 0)
 
-  // The sheet converts only price. Revenue and price are both line totals now,
-  // so qty cancels out of the ratio and this is still a clean per-currency rate.
-  const fxRate = priceOriginal !== 0 && revenuePLN !== null ? revenuePLN / priceOriginal : 1
+  // The sheet converts only price, so the FX rate has to be recovered from the
+  // one pair it does convert — but `price` is per *unit* while `pricePLN` is a
+  // line total, so their raw ratio is the real rate multiplied by qty. Qty does
+  // not cancel and must be divided out.
+  //
+  // Verified across all four currencies: at qty=1 the raw ratio already sits on
+  // the true rate (EUR 4.32, CZK 0.178, HUF 0.012, PLN 1.00), and at qty=2 it
+  // reads exactly double, dividing back to the same rate per unit.
+  //
+  // Leaving qty in inflated `commissionPLN` on every multi-unit line, which
+  // pushed the measured Allegro commission from its true 15.0% to 19.6% — and
+  // any rate read off this feeds directly into price targets and projections.
+  const fxRate =
+    priceOriginal !== 0 && revenuePLN !== null && qty > 0
+      ? revenuePLN / (priceOriginal * qty)
+      : 1
 
   const customerName = toText(raw.customerName)
   const date = toDate(raw.date)

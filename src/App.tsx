@@ -4,6 +4,7 @@ import { Route, Routes, useLocation } from 'react-router-dom'
 import { AppShell } from '@/app/app-shell'
 import { ActionCentrePage } from '@/pages/action-centre'
 import { BusinessReviewPage } from '@/pages/business-review'
+import { CalculatorPage } from '@/pages/calculator'
 import { OverviewPage } from '@/pages/overview'
 import { PricingPage } from '@/pages/pricing'
 import { ProductsPage } from '@/pages/products'
@@ -72,6 +73,14 @@ export default function App() {
           element={
             <PageTransition>
               <PricingPage />
+            </PageTransition>
+          }
+        />
+        <Route
+          path="calculator"
+          element={
+            <PageTransition>
+              <CalculatorPage />
             </PageTransition>
           }
         />

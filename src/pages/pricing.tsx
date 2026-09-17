@@ -469,7 +469,13 @@ function ExpandedRow({ row }: { row: PricingRow }) {
           title="Margin targets"
           description="The exact price this product needs to reach each margin, after VAT and its own measured commission rate."
         >
-          <MarginTargets row={row} />
+          <MarginTargets
+            targets={row.targets}
+            currentPricePLN={row.averagePricePLN}
+            hasCost={row.unitCostPLN !== null}
+            currentLabel={`Current average price (${row.ordersInWindow} recent sales)`}
+            isHealthyNow={row.averageMarginPct >= 10}
+          />
         </Block>
 
         <div className="space-y-5">

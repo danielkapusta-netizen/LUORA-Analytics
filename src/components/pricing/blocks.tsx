@@ -6,6 +6,7 @@ import { Tooltip } from '@/components/ui/tooltip'
 import {
   simulatePrice,
   type MarginHealth,
+  type MarginTarget,
   type PricingRecommendation,
   type PricingRow,
   type PriceStatus,
@@ -97,17 +98,25 @@ export function MarginHealthScale({ health }: { health: MarginHealth }) {
  * average price is placed on the ladder so "am I above or below the line" is
  * read positionally rather than computed in the reader's head.
  */
-export function MarginTargets({ row }: { row: PricingRow }) {
-  if (row.unitCostPLN === null) {
-    return (
-      <p className="t-small text-ink-muted">
-        No landed cost on file — target prices cannot be computed until this product is added to
-        the cost sheet.
-      </p>
-    )
+export function MarginTargets({
+  targets,
+  currentPricePLN,
+  hasCost,
+  currentLabel,
+  isHealthyNow,
+  missingCostNote = 'No landed cost on file — target prices cannot be computed until this product is added to the cost sheet.',
+}: {
+  targets: readonly MarginTarget[]
+  currentPricePLN: number
+  hasCost: boolean
+  /** What the current price represents — a realised average, or an intent. */
+  currentLabel: string
+  isHealthyNow: boolean
+  missingCostNote?: string
+}) {
+  if (!hasCost) {
+    return <p className="t-small text-ink-muted">{missingCostNote}</p>
   }
-
-  const isHealthyNow = row.averageMarginPct >= 10
 
   return (
     <div className="space-y-4">
@@ -119,16 +128,14 @@ export function MarginTargets({ row }: { row: PricingRow }) {
             : 'border-negative/25 bg-negative-soft/50',
         )}
       >
-        <span className="t-caption font-medium text-ink-muted">
-          Current average price ({row.ordersInWindow} recent sales)
-        </span>
+        <span className="t-caption font-medium text-ink-muted">{currentLabel}</span>
         <span
           className={cn(
             'tnum text-[18px] font-semibold tracking-[-0.02em]',
             isHealthyNow ? 'text-positive' : 'text-negative',
           )}
         >
-          {formatPLNExact(row.averagePricePLN)}
+          {formatPLNExact(currentPricePLN)}
         </span>
       </div>
 
@@ -141,7 +148,7 @@ export function MarginTargets({ row }: { row: PricingRow }) {
           </tr>
         </thead>
         <tbody>
-          {row.targets.map((target) => (
+          {targets.map((target) => (
             <tr key={target.label} className="border-t border-hairline t-small">
               <td className="py-2 text-ink-muted">{target.label}</td>
               <td className="tnum py-2 text-right text-ink">
@@ -158,7 +165,7 @@ export function MarginTargets({ row }: { row: PricingRow }) {
                   <Check className="ml-auto h-3.5 w-3.5 text-positive" aria-label="Achieved" />
                 ) : (
                   <span className="t-micro text-ink-subtle">
-                    +{formatPLN(target.requiredPricePLN - row.averagePricePLN)}
+                    +{formatPLN(target.requiredPricePLN - currentPricePLN)}
                   </span>
                 )}
               </td>

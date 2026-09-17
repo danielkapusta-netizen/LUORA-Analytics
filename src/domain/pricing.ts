@@ -31,7 +31,7 @@ import type { Granularity, LineItem, Order, ProductCost } from './types'
 
 export const VAT_RATE = 0.23
 /** Net share of a gross price after VAT. */
-const NET = 1 / (1 + VAT_RATE)
+export const NET = 1 / (1 + VAT_RATE)
 
 export type PricingPeriodKey = 'last5' | 'week' | 'month' | 'lastMonth' | 'quarter' | 'year' | 'all'
 
@@ -194,7 +194,7 @@ export function priceForMargin(
 }
 
 /** Prices ending in .90 convert better on Polish marketplaces; round up to one. */
-function toCharmPrice(price: number): number {
+export function toCharmPrice(price: number): number {
   const floor = Math.floor(price)
   const charm = floor + 0.9
   return charm >= price ? charm : floor + 1 + 0.9
