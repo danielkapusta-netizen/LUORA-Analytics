@@ -136,30 +136,49 @@ export interface CatalogueTrendPoint {
   units: number
   /** Average selling price per unit — the price history for this row. */
   avgUnitPricePLN: number
+  /**
+   * Distinct customer orders containing this row that month — not lines.
+   * A basket holding three products of one brand is one order for that brand.
+   */
+  orders: number
 }
 
 /**
- * Monthly history for one catalogue row: revenue, profit, margin rate and
- * realised unit price. Price history matters as much as revenue here — a
- * product whose margin is sliding usually shows it in average selling price
- * before it shows it anywhere else.
+ * Monthly history for one catalogue row: revenue, profit, margin rate,
+ * realised unit price and how often it sold. Price history matters as much as
+ * revenue here — a product whose margin is sliding usually shows it in average
+ * selling price before it shows it anywhere else — and order count is what
+ * separates a margin that improved from demand that collapsed.
  */
 export function buildCatalogueHistory(
   orders: readonly Order[],
   productKeys: readonly string[],
 ): CatalogueTrendPoint[] {
   const wanted = new Set(productKeys)
-  const buckets = new Map<string, { revenue: number; margin: number; units: number }>()
+  const buckets = new Map<
+    string,
+    { revenue: number; margin: number; units: number; orderIds: Set<string> }
+  >()
 
   for (const order of orders) {
     if (!order.date) continue
     const month = order.date.toISOString().slice(0, 7)
     for (const line of order.items) {
       if (!wanted.has(line.productKey)) continue
-      const bucket = buckets.get(month) ?? { revenue: 0, margin: 0, units: 0 }
+      const bucket = buckets.get(month) ?? {
+        revenue: 0,
+        margin: 0,
+        units: 0,
+        orderIds: new Set<string>(),
+      }
       bucket.revenue += line.revenuePLN
       bucket.margin += line.marginPLN
       bucket.units += line.qty
+      // Orders are counted by identity, not by line. A row can be a brand or a
+      // category spanning many products, so one basket holding several of them
+      // must count once — adding to a set makes the repeat harmless rather
+      // than inflating every multi-product order.
+      bucket.orderIds.add(order.id)
       buckets.set(month, bucket)
     }
   }
@@ -173,6 +192,7 @@ export function buildCatalogueHistory(
       marginPct: ratio(bucket.margin, bucket.revenue) * 100,
       units: bucket.units,
       avgUnitPricePLN: ratio(bucket.revenue, bucket.units),
+      orders: bucket.orderIds.size,
     }))
 }
 

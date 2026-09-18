@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ChevronDown, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { DemandTrendChart } from '@/components/charts/demand-trend-chart'
 import { MarginTrendChart } from '@/components/charts/margin-trend-chart'
 import { InsightCard } from '@/components/insight-card'
 import { PageHeader } from '@/components/page-header'
@@ -436,6 +437,43 @@ function RowDetail({
                   }}
                 />
                 Avg unit price (right axis)
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Demand sits directly beneath margin on the same month axis, because
+          the two only mean something together: a margin that improved while
+          orders fell is a product that stopped selling, not one that got
+          better. */}
+      {history.length >= 2 && (
+        <div className="space-y-2.5">
+          <div>
+            <p className="t-caption font-semibold uppercase tracking-[0.06em] text-ink-muted">
+              Orders over time
+            </p>
+            <p className="mt-1 t-caption text-ink-subtle">
+              How often this sold each month, with units behind it — the two lines drifting apart
+              means customers are buying more than one at a time.
+            </p>
+          </div>
+          <div className="rounded-xl border border-hairline bg-surface p-4">
+            <DemandTrendChart history={history} />
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 t-caption text-ink-muted">
+              <span className="flex items-center gap-1.5">
+                <span className="h-0.5 w-4 rounded-full bg-accent" />
+                Orders
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="h-0.5 w-4 rounded-full"
+                  style={{
+                    backgroundImage:
+                      'repeating-linear-gradient(to right, var(--caution) 0 3px, transparent 3px 6px)',
+                  }}
+                />
+                Units
               </span>
             </div>
           </div>

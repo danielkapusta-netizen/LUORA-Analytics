@@ -74,6 +74,13 @@ export function formatDateShort(value: Date | string | null): string {
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+/** `Aug 26` — month buckets on a chart axis, where the day is meaningless. */
+export function formatMonthShort(value: string): string {
+  const parsed = new Date(`${value}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' })
+}
+
 /** `8 – 17 Jul 2026`, collapsing repeated month and year. */
 export function formatDateRange(from: Date | string | null, to: Date | string | null): string {
   if (!from || !to) return '—'

@@ -12,13 +12,7 @@ import {
 } from 'recharts'
 
 import type { CatalogueTrendPoint } from '@/domain/catalogue'
-import { formatNumber, formatPercent, formatPLN } from '@/lib/format'
-
-function monthLabel(date: string): string {
-  const parsed = new Date(`${date}T00:00:00Z`)
-  if (Number.isNaN(parsed.getTime())) return date
-  return parsed.toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' })
-}
+import { formatMonthShort, formatNumber, formatPercent, formatPLN } from '@/lib/format'
 
 /**
  * Margin rate over time for one catalogue row, with realised unit price behind
@@ -60,7 +54,7 @@ export function MarginTrendChart({
           <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
           <XAxis
             dataKey="date"
-            tickFormatter={monthLabel}
+            tickFormatter={formatMonthShort}
             tickLine={false}
             axisLine={false}
             tick={{ fill: 'var(--ink-subtle)', fontSize: 11 }}
@@ -101,7 +95,7 @@ export function MarginTrendChart({
               return (
                 <div className="min-w-[180px] rounded-xl border border-hairline bg-surface-raised p-3 shadow-overlay">
                   <p className="mb-2 t-caption font-semibold text-ink">
-                    {monthLabel(String(label))}
+                    {formatMonthShort(String(label))}
                   </p>
                   <dl className="space-y-1.5">
                     {rows.map((row) => (
