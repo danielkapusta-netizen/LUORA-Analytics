@@ -649,13 +649,14 @@ function HistoryTable({ history }: { history: ReturnType<typeof buildCatalogueHi
         </p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[520px] text-left">
+        <table className="w-full min-w-[580px] text-left">
           <thead>
             <tr className="t-label text-ink-subtle">
               <th className="pb-2 font-semibold">Month</th>
               <th className="pb-2 font-semibold">Revenue</th>
               <th className="pb-2 text-right font-semibold">Profit</th>
               <th className="pb-2 text-right font-semibold">Margin</th>
+              <th className="pb-2 text-right font-semibold">Orders</th>
               <th className="pb-2 text-right font-semibold">Units</th>
               <th className="pb-2 text-right font-semibold">Avg price</th>
             </tr>
@@ -704,6 +705,9 @@ function HistoryTable({ history }: { history: ReturnType<typeof buildCatalogueHi
                         {marginShift > 0 ? '▲' : '▼'}
                       </span>
                     )}
+                  </td>
+                  <td className="tnum py-2 text-right text-ink">
+                    {formatNumber(point.orders)}
                   </td>
                   <td className="tnum py-2 text-right text-ink-muted">
                     {formatNumber(point.units)}
