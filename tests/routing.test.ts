@@ -1,0 +1,73 @@
+import { describe, expect, it } from 'vitest';
+import { chooseRoute, describeConditions, matchesRule, type CarrierLike, type RuleLike } from '@/server/services/routing';
+
+const carriers: CarrierLike[] = [
+  { id: 'inpost', type: 'inpost', enabled: true },
+  { id: 'allegro', type: 'allegro_shipping', enabled: true },
+];
+
+const rule = (r: Partial<RuleLike> & Pick<RuleLike, 'id' | 'carrierAccountId' | 'service'>): RuleLike => ({
+  name: r.id,
+  priority: 100,
+  enabled: true,
+  conditions: {},
+  packagePresetId: null,
+  ...r,
+});
+
+const defaults = [
+  rule({ id: 'allegro-orders', priority: 10, conditions: { marketplaces: ['allegro'] }, carrierAccountId: 'allegro', service: 'buyer_choice' }),
+  rule({ id: 'lockers', priority: 20, conditions: { hasPickupPoint: true }, carrierAccountId: 'inpost', service: 'inpost_locker_standard' }),
+  rule({ id: 'rest', priority: 30, carrierAccountId: 'inpost', service: 'inpost_courier_standard' }),
+];
+
+const order = (o: Partial<Parameters<typeof chooseRoute>[0]> = {}) => ({
+  marketplace: 'shopify' as const,
+  deliveryMethodName: 'Kurier InPost',
+  pickupPointId: null,
+  codAmount: null,
+  ...o,
+});
+
+describe('chooseRoute', () => {
+  it('sends Allegro orders through Allegro Delivery', () => {
+    expect(chooseRoute(order({ marketplace: 'allegro', pickupPointId: 'POZ08A' }), defaults, carriers)?.ruleId).toBe('allegro-orders');
+  });
+
+  it('sends Shopify and Empik orders with a pickup point to an InPost locker', () => {
+    expect(chooseRoute(order({ pickupPointId: 'KRA010' }), defaults, carriers)?.service).toBe('inpost_locker_standard');
+    expect(chooseRoute(order({ marketplace: 'empik', pickupPointId: 'WAW01A' }), defaults, carriers)?.service).toBe('inpost_locker_standard');
+  });
+
+  it('falls back to the courier rule', () => {
+    expect(chooseRoute(order(), defaults, carriers)?.ruleId).toBe('rest');
+  });
+
+  it('never routes a non-Allegro order to Allegro Delivery, even by a catch-all rule', () => {
+    const rules = [rule({ id: 'all-allegro', priority: 1, carrierAccountId: 'allegro', service: 'buyer_choice' }), ...defaults];
+    expect(chooseRoute(order(), rules, carriers)?.ruleId).toBe('rest');
+  });
+
+  it('skips disabled rules and disabled carriers', () => {
+    const rules = defaults.map((r) => (r.id === 'lockers' ? { ...r, enabled: false } : r));
+    expect(chooseRoute(order({ pickupPointId: 'KRA010' }), rules, carriers)?.ruleId).toBe('rest');
+    const noInpost = carriers.map((c) => (c.id === 'inpost' ? { ...c, enabled: false } : c));
+    expect(chooseRoute(order(), defaults, noInpost)).toBeNull();
+  });
+
+  it('respects priority regardless of array order', () => {
+    expect(chooseRoute(order({ marketplace: 'allegro' }), [...defaults].reverse(), carriers)?.ruleId).toBe('allegro-orders');
+  });
+});
+
+describe('matchesRule', () => {
+  it('matches delivery method case-insensitively and COD', () => {
+    expect(matchesRule(order({ deliveryMethodName: 'Kurier InPost – POBRANIE', codAmount: '99.00' }), { deliveryMethodContains: 'pobranie', cod: true })).toBe(true);
+    expect(matchesRule(order({ codAmount: '0' }), { cod: true })).toBe(false);
+  });
+
+  it('describes conditions for the settings page', () => {
+    expect(describeConditions({})).toBe('every order');
+    expect(describeConditions({ marketplaces: ['allegro'], hasPickupPoint: true })).toBe('marketplace is allegro, has a pickup point');
+  });
+});

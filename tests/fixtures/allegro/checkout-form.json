@@ -1,0 +1,56 @@
+{
+  "id": "29738e61-7f6a-11e8-ac45-09db60ede9d6",
+  "messageToSeller": "Proszę o szybką wysyłkę",
+  "buyer": {
+    "id": "23123123",
+    "email": "user@allegro.pl",
+    "login": "User_Login",
+    "firstName": "Jan",
+    "lastName": "Nowak",
+    "companyName": null,
+    "guest": false,
+    "phoneNumber": "123123123"
+  },
+  "payment": {
+    "id": "0f8f1d13-7e9e-11e8-9b00-c5b0dfb78ea6",
+    "type": "ONLINE",
+    "provider": "P24",
+    "finishedAt": "2026-09-21T10:03:00.000Z",
+    "paidAmount": { "amount": "123.45", "currency": "PLN" }
+  },
+  "status": "READY_FOR_PROCESSING",
+  "fulfillment": { "status": "NEW", "shipmentSummary": { "lineItemsSent": "NONE" } },
+  "delivery": {
+    "address": {
+      "firstName": "Jan",
+      "lastName": "Nowak",
+      "street": "Grunwaldzka 182",
+      "city": "Poznań",
+      "zipCode": "60-166",
+      "countryCode": "PL",
+      "companyName": null,
+      "phoneNumber": "+48 123 123 123"
+    },
+    "method": { "id": "2488f7b7-5d1c-4d65-b85c-4cbcf253fd93", "name": "Allegro Paczkomaty InPost" },
+    "pickupPoint": { "id": "POZ08A", "name": "Paczkomat POZ08A", "description": "Stacja paliw BP" },
+    "cost": { "amount": "8.99", "currency": "PLN" },
+    "smart": true,
+    "calculatedNumberOfPackages": 1
+  },
+  "invoice": { "required": false },
+  "lineItems": [
+    {
+      "id": "62ae358b-8f65-11e8-b3a5-bd4c3d4e8d3c",
+      "offer": { "id": "10000000001", "name": "Świeca sojowa Las", "external": { "id": "LUO-CND-01" } },
+      "quantity": 2,
+      "originalPrice": { "amount": "59.00", "currency": "PLN" },
+      "price": { "amount": "57.23", "currency": "PLN" },
+      "boughtAt": "2026-09-21T10:00:00.000Z"
+    }
+  ],
+  "surcharges": [],
+  "discounts": [],
+  "summary": { "totalToPay": { "amount": "123.45", "currency": "PLN" } },
+  "updatedAt": "2026-09-21T10:03:01.000Z",
+  "revision": "819b5836"
+}

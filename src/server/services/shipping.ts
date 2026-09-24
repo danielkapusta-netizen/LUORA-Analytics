@@ -1,0 +1,410 @@
+import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
+import { PDFDocument } from 'pdf-lib';
+import { getDb } from '../db/client';
+import {
+  carrierAccounts,
+  labelFiles,
+  orders,
+  packagePresets,
+  shipmentBatches,
+  shipments,
+  shippingRules,
+  type CarrierAccount,
+  type Order,
+  type PackagePreset,
+  type Shipment,
+  type ShipmentOptions,
+} from '../db/schema';
+import type { CarrierService, ShipmentStatus } from '../integrations/carriers/types';
+import type { LabelFormat, LabelSize, ParcelSpec } from '../integrations/types';
+import { enqueue, JOBS } from '../jobs/queue';
+import { getCarrierAdapter, loadCarrierAccount } from './accounts';
+import { logEvent } from './events';
+import { loadOrder } from './orders';
+import { carrierSupportsOrder, chooseRoute, type RouteDecision } from './routing';
+import { changeStatus } from './workflow';
+
+/** Give up polling a pending shipment after this many attempts. */
+const MAX_POLLS = 40;
+
+export class ShippingError extends Error {}
+
+export function presetToParcel(preset: PackagePreset): ParcelSpec {
+  return {
+    lengthCm: preset.lengthCm,
+    widthCm: preset.widthCm,
+    heightCm: preset.heightCm,
+    weightKg: Number(preset.weightKg),
+    inpostTemplate: (preset.inpostTemplate as ParcelSpec['inpostTemplate']) ?? null,
+  };
+}
+
+export async function loadRoutingData() {
+  const db = getDb();
+  const [rules, carriers, presets] = await Promise.all([
+    db.select().from(shippingRules).orderBy(asc(shippingRules.priority)),
+    db.select().from(carrierAccounts).orderBy(asc(carrierAccounts.name)),
+    db.select().from(packagePresets).orderBy(asc(packagePresets.name)),
+  ]);
+  return { rules, carriers, presets };
+}
+
+export function routeOrder(order: Order, data: Awaited<ReturnType<typeof loadRoutingData>>): RouteDecision | null {
+  return chooseRoute(order, data.rules, data.carriers);
+}
+
+/** Everything the "Create label" form needs, pre-filled from the shipping rules. */
+export async function shippingFormData(orderId: string) {
+  const order = await loadOrder(orderId);
+  const data = await loadRoutingData();
+  const route = routeOrder(order, data);
+  const carriers = data.carriers.filter((c) => c.enabled && carrierSupportsOrder(c, order));
+  const services: Record<string, CarrierService[]> = {};
+  for (const carrier of carriers) {
+    try {
+      services[carrier.id] = await (await getCarrierAdapter(carrier)).services();
+    } catch {
+      services[carrier.id] = [];
+    }
+  }
+  const defaultPreset = data.presets.find((p) => p.id === route?.packagePresetId) ?? data.presets.find((p) => p.isDefault) ?? data.presets[0];
+  return { order, route, carriers, services, presets: data.presets, defaultPreset: defaultPreset ?? null };
+}
+
+export interface ShipmentInput {
+  orderId: string;
+  carrierAccountId: string;
+  service: string;
+  parcel: ParcelSpec;
+  options: ShipmentOptions;
+  labelFormat?: LabelFormat;
+  labelSize?: LabelSize;
+  batchId?: string | null;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === '23505' || e?.cause?.code === '23505';
+}
+
+/** Records a shipment and queues the label purchase. Returns the new shipment id. */
+export async function requestShipment(input: ShipmentInput, userId: string | null): Promise<string> {
+  const db = getDb();
+  const order = await loadOrder(input.orderId);
+  if (order.status === 'cancelled') throw new ShippingError(`Order ${order.externalNumber} is cancelled`);
+  if (order.status === 'shipped' || order.status === 'delivered') throw new ShippingError(`Order ${order.externalNumber} is already shipped`);
+  if (!order.readyToShip) throw new ShippingError(`Order ${order.externalNumber} is not ready to ship on ${order.marketplace} (${order.marketplaceStatus})`);
+
+  const carrier = await loadCarrierAccount(input.carrierAccountId);
+  if (!carrier.enabled) throw new ShippingError(`${carrier.name} is disabled`);
+  if (!carrierSupportsOrder(carrier, order)) throw new ShippingError(`${carrier.name} can only ship Allegro orders`);
+  if (!carrier.sender) throw new ShippingError(`${carrier.name} has no sender address. Add it in Settings → Integrations.`);
+
+  let id: string;
+  try {
+    const [row] = await db
+      .insert(shipments)
+      .values({
+        orderId: order.id,
+        carrierAccountId: carrier.id,
+        carrier: carrier.type,
+        service: input.service,
+        parcel: input.parcel,
+        options: { reference: order.externalNumber, ...input.options },
+        labelFormat: input.labelFormat ?? carrier.settings.labelFormat ?? 'pdf',
+        labelSize: input.labelSize ?? carrier.settings.labelSize ?? 'A6',
+        batchId: input.batchId ?? null,
+        createdBy: userId,
+      })
+      .returning({ id: shipments.id });
+    id = row.id;
+  } catch (err) {
+    if (isUniqueViolation(err)) throw new ShippingError(`Order ${order.externalNumber} already has a label or one is being created`);
+    throw err;
+  }
+  await logEvent(db, order.id, 'label', `Label requested: ${carrier.name}, ${input.service}`, { userId });
+  await enqueue(JOBS.shipmentCreate, { shipmentId: id });
+  return id;
+}
+
+async function findShipment(shipmentId: string): Promise<{ shipment: Shipment; order: Order; carrier: CarrierAccount } | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ shipment: shipments, order: orders, carrier: carrierAccounts })
+    .from(shipments)
+    .innerJoin(orders, eq(orders.id, shipments.orderId))
+    .innerJoin(carrierAccounts, eq(carrierAccounts.id, shipments.carrierAccountId))
+    .where(eq(shipments.id, shipmentId));
+  return row ?? null;
+}
+
+async function loadShipment(shipmentId: string) {
+  const row = await findShipment(shipmentId);
+  if (!row) throw new ShippingError('Shipment not found');
+  return row;
+}
+
+async function failShipment(shipment: Shipment, error: string): Promise<void> {
+  const db = getDb();
+  await db.update(shipments).set({ state: 'failed', error }).where(eq(shipments.id, shipment.id));
+  await logEvent(db, shipment.orderId, 'error', `Label failed: ${error}`);
+}
+
+/** Job: calls the carrier to create the shipment. */
+export async function runCreateShipment(shipmentId: string): Promise<void> {
+  const row = await findShipment(shipmentId);
+  if (!row || row.shipment.state !== 'pending') return;
+  const { shipment, order, carrier } = row;
+  // Created before (e.g. the worker restarted mid-job): continue polling instead of buying again.
+  if (shipment.externalId || shipment.commandId) return runPollShipment(shipmentId);
+
+  let status: ShipmentStatus;
+  try {
+    const adapter = await getCarrierAdapter(carrier);
+    status = await adapter.createShipment({
+      shipmentId: shipment.id,
+      service: shipment.service,
+      sender: carrier.sender!,
+      receiver: order.shippingAddress,
+      pickupPointId: shipment.options.pickupPointId ?? order.pickupPointId,
+      parcel: shipment.parcel,
+      codAmount: shipment.options.codAmount ?? null,
+      insuranceAmount: shipment.options.insuranceAmount ?? null,
+      currency: order.currency,
+      reference: shipment.options.reference ?? order.externalNumber,
+      deliveryMethodId: order.deliveryMethodId,
+      labelFormat: shipment.labelFormat,
+    });
+  } catch (err) {
+    return failShipment(shipment, err instanceof Error ? err.message : String(err));
+  }
+  await applyStatus(shipment, carrier, status);
+}
+
+/** Job: checks on a shipment the carrier is still creating. */
+export async function runPollShipment(shipmentId: string): Promise<void> {
+  const row = await findShipment(shipmentId);
+  if (!row || row.shipment.state !== 'pending') return;
+  const { shipment, carrier } = row;
+  const adapter = await getCarrierAdapter(carrier);
+  const status = await adapter.refreshShipment({ externalId: shipment.externalId, commandId: shipment.commandId });
+  await applyStatus(shipment, carrier, status);
+}
+
+async function applyStatus(shipment: Shipment, carrier: CarrierAccount, status: ShipmentStatus): Promise<void> {
+  const db = getDb();
+  if (status.state === 'failed') {
+    await db
+      .update(shipments)
+      .set({ externalId: status.externalId || shipment.externalId, commandId: status.commandId ?? shipment.commandId })
+      .where(eq(shipments.id, shipment.id));
+    return failShipment(shipment, status.error ?? 'The carrier rejected the shipment');
+  }
+
+  if (status.state === 'pending') {
+    const attempts = shipment.pollAttempts + 1;
+    await db
+      .update(shipments)
+      .set({ externalId: status.externalId || shipment.externalId, commandId: status.commandId ?? shipment.commandId, pollAttempts: attempts })
+      .where(eq(shipments.id, shipment.id));
+    if (attempts > MAX_POLLS) return failShipment(shipment, 'The carrier did not confirm the shipment in time');
+    await enqueue(JOBS.shipmentPoll, { shipmentId: shipment.id }, { startAfterSeconds: Math.max(1, Math.ceil(status.retryAfterSeconds ?? 3)) });
+    return;
+  }
+
+  // Created: download the label while we are here, so printing never waits on the carrier.
+  const adapter = await getCarrierAdapter(carrier);
+  const label = await adapter.getLabels([status.externalId], { format: shipment.labelFormat, size: shipment.labelSize });
+  await db.transaction(async (tx) => {
+    await tx
+      .update(shipments)
+      .set({
+        state: 'created',
+        externalId: status.externalId,
+        commandId: status.commandId ?? shipment.commandId,
+        trackingNumber: status.trackingNumber ?? null,
+        trackingUrl: status.trackingUrl ?? null,
+        carrierCode: status.carrierCode ?? null,
+        error: null,
+      })
+      .where(eq(shipments.id, shipment.id));
+    await tx
+      .insert(labelFiles)
+      .values({ shipmentId: shipment.id, format: shipment.labelFormat, size: shipment.labelSize, content: label })
+      .onConflictDoUpdate({ target: labelFiles.shipmentId, set: { content: label } });
+    await logEvent(tx, shipment.orderId, 'label', `Label created: ${carrier.name}, tracking ${status.trackingNumber ?? '—'}`);
+    await changeStatus(tx, shipment.orderId, 'label_created', { reason: 'label created', force: true });
+  });
+  await enqueue(JOBS.trackingPush, { shipmentId: shipment.id });
+}
+
+/**
+ * Job: finds shipments stuck in "pending" (a poll job ran out of retries, or the
+ * worker died mid-request) and polls them again.
+ */
+export async function runPendingSweep(): Promise<{ polled: number; failed: number }> {
+  const db = getDb();
+  const stale = await db
+    .select()
+    .from(shipments)
+    .where(and(eq(shipments.state, 'pending'), lt(shipments.updatedAt, new Date(Date.now() - 2 * 60_000))));
+  let polled = 0;
+  let failed = 0;
+  for (const shipment of stale) {
+    if (shipment.externalId || shipment.commandId) {
+      await db.update(shipments).set({ updatedAt: new Date() }).where(eq(shipments.id, shipment.id));
+      await enqueue(JOBS.shipmentPoll, { shipmentId: shipment.id });
+      polled++;
+    } else if (shipment.createdAt.getTime() < Date.now() - 10 * 60_000) {
+      // We never got an id back, so we can't tell whether the carrier created it.
+      await failShipment(shipment, 'Label creation was interrupted. Check the carrier panel before retrying.');
+      failed++;
+    }
+  }
+  return { polled, failed };
+}
+
+/** Manually re-checks a pending shipment. */
+export async function pollNow(shipmentId: string): Promise<void> {
+  await enqueue(JOBS.shipmentPoll, { shipmentId });
+}
+
+export async function cancelShipment(shipmentId: string, userId: string): Promise<void> {
+  const db = getDb();
+  const { shipment, order, carrier } = await loadShipment(shipmentId);
+  if (shipment.state === 'cancelled') return;
+  if (shipment.trackingPushedAt) {
+    throw new ShippingError('Tracking was already sent to the marketplace; cancel the shipment there and in the carrier panel');
+  }
+  if (shipment.externalId && shipment.state === 'created') {
+    await (await getCarrierAdapter(carrier)).cancelShipment(shipment.externalId);
+  }
+  await db.transaction(async (tx) => {
+    await tx.update(shipments).set({ state: 'cancelled' }).where(eq(shipments.id, shipment.id));
+    await logEvent(tx, order.id, 'label', `Label cancelled (${carrier.name})`, { userId });
+    if (order.status === 'label_created') await changeStatus(tx, order.id, 'processing', { userId, reason: 'label cancelled' });
+  });
+}
+
+/** Re-queues a failed shipment with the same settings. */
+export async function retryShipment(shipmentId: string, userId: string): Promise<string> {
+  const { shipment } = await loadShipment(shipmentId);
+  if (shipment.state !== 'failed') throw new ShippingError('Only failed labels can be retried');
+  return requestShipment(
+    {
+      orderId: shipment.orderId,
+      carrierAccountId: shipment.carrierAccountId,
+      service: shipment.service,
+      parcel: shipment.parcel,
+      options: shipment.options,
+      labelFormat: shipment.labelFormat,
+      labelSize: shipment.labelSize,
+      batchId: shipment.batchId,
+    },
+    userId,
+  );
+}
+
+export async function getLabel(shipmentId: string) {
+  const [file] = await getDb().select().from(labelFiles).where(eq(labelFiles.shipmentId, shipmentId));
+  return file ?? null;
+}
+
+/** Joins labels into one printable file: PDFs are merged, ZPL is concatenated. */
+export async function mergeLabels(files: { format: LabelFormat; content: Buffer }[]): Promise<{ format: LabelFormat; content: Buffer }> {
+  if (files.length === 0) throw new ShippingError('No labels to print');
+  const pdfs = files.filter((f) => f.format === 'pdf');
+  if (pdfs.length === 0) return { format: 'zpl', content: Buffer.concat(files.map((f) => Buffer.concat([f.content, Buffer.from('\n')]))) };
+  const merged = await PDFDocument.create();
+  for (const file of pdfs) {
+    const doc = await PDFDocument.load(file.content);
+    for (const page of await merged.copyPages(doc, doc.getPageIndices())) merged.addPage(page);
+  }
+  return { format: 'pdf', content: Buffer.from(await merged.save()) };
+}
+
+export async function mergedLabelsFor(shipmentIds: string[]) {
+  const files = await getDb()
+    .select({ format: labelFiles.format, content: labelFiles.content, shipmentId: labelFiles.shipmentId })
+    .from(labelFiles)
+    .where(inArray(labelFiles.shipmentId, shipmentIds))
+    .orderBy(asc(labelFiles.createdAt));
+  return mergeLabels(files);
+}
+
+// ---------------------------------------------------------------- bulk
+
+/**
+ * Queues labels for many orders, each routed by the shipping rules.
+ * Orders that can't be routed are listed in the batch as skipped.
+ */
+export async function createBatch(orderIds: string[], userId: string): Promise<string> {
+  const db = getDb();
+  const data = await loadRoutingData();
+  const selected = await db.select().from(orders).where(inArray(orders.id, orderIds));
+  const [batch] = await db.insert(shipmentBatches).values({ createdBy: userId, total: selected.length }).returning({ id: shipmentBatches.id });
+
+  const skipped: { orderId: string; reason: string }[] = [];
+  for (const order of selected) {
+    const route = routeOrder(order, data);
+    if (!route) {
+      skipped.push({ orderId: order.id, reason: 'No shipping rule matches this order' });
+      continue;
+    }
+    const preset = data.presets.find((p) => p.id === route.packagePresetId) ?? data.presets.find((p) => p.isDefault) ?? data.presets[0];
+    if (!preset) {
+      skipped.push({ orderId: order.id, reason: 'No package preset defined' });
+      continue;
+    }
+    try {
+      await requestShipment(
+        {
+          orderId: order.id,
+          carrierAccountId: route.carrierAccountId,
+          service: route.service,
+          parcel: presetToParcel(preset),
+          options: { codAmount: order.codAmount, pickupPointId: order.pickupPointId },
+          batchId: batch.id,
+        },
+        userId,
+      );
+    } catch (err) {
+      skipped.push({ orderId: order.id, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  await db.update(shipmentBatches).set({ skipped }).where(eq(shipmentBatches.id, batch.id));
+  return batch.id;
+}
+
+export async function getBatch(batchId: string) {
+  const db = getDb();
+  const [batch] = await db.select().from(shipmentBatches).where(eq(shipmentBatches.id, batchId));
+  if (!batch) return null;
+  const rows = await db
+    .select({ shipment: shipments, order: orders, carrierName: carrierAccounts.name })
+    .from(shipments)
+    .innerJoin(orders, eq(orders.id, shipments.orderId))
+    .innerJoin(carrierAccounts, eq(carrierAccounts.id, shipments.carrierAccountId))
+    .where(eq(shipments.batchId, batchId))
+    .orderBy(asc(orders.externalNumber));
+  const skippedOrders = batch.skipped.length
+    ? await db.select().from(orders).where(inArray(orders.id, batch.skipped.map((s) => s.orderId)))
+    : [];
+  return { batch, rows, skipped: batch.skipped.map((s) => ({ ...s, order: skippedOrders.find((o) => o.id === s.orderId) ?? null })) };
+}
+
+export async function recentBatches(limit = 20) {
+  return getDb().select().from(shipmentBatches).orderBy(desc(shipmentBatches.createdAt)).limit(limit);
+}
+
+export async function recentShipments(filter: { state?: string } = {}, limit = 100) {
+  const db = getDb();
+  return db
+    .select({ shipment: shipments, order: orders, carrierName: carrierAccounts.name })
+    .from(shipments)
+    .innerJoin(orders, eq(orders.id, shipments.orderId))
+    .innerJoin(carrierAccounts, eq(carrierAccounts.id, shipments.carrierAccountId))
+    .where(filter.state ? and(eq(shipments.state, filter.state as Shipment['state'])) : undefined)
+    .orderBy(desc(shipments.createdAt))
+    .limit(limit);
+}

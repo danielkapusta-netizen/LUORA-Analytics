@@ -1,0 +1,160 @@
+import { http, HttpResponse } from 'msw';
+import { setupServer } from 'msw/node';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { AllegroShippingAdapter, buildCreateCommand } from '@/server/integrations/carriers/allegro-shipping/adapter';
+import { buildShipxPayload, InpostAdapter } from '@/server/integrations/carriers/inpost/adapter';
+import type { ShipmentRequest } from '@/server/integrations/carriers/types';
+import { AllegroClient, type AllegroCredentials } from '@/server/integrations/marketplaces/allegro/client';
+
+const server = setupServer();
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+const request: ShipmentRequest = {
+  shipmentId: '5b0c4f8e-7d4a-4b8a-9f5e-2f1c7a6d9e10',
+  service: 'inpost_locker_standard',
+  sender: { name: 'Magazyn', company: 'Luora', street: 'ul. Magazynowa 5', city: 'Warszawa', postalCode: '02-222', countryCode: 'PL', phone: '+48 500 600 700', email: 'w@example.com' },
+  receiver: { name: 'Jan Kowalski', street: 'ul. Długa 5/3', city: 'Kraków', postalCode: '31-147', countryCode: 'PL', phone: '+48 600 700 800', email: 'jan@example.com' },
+  pickupPointId: 'KRA010',
+  parcel: { lengthCm: 30, widthCm: 20, heightCm: 10, weightKg: 1.5, inpostTemplate: 'medium' },
+  codAmount: null,
+  insuranceAmount: null,
+  currency: 'PLN',
+  reference: '#1042',
+  deliveryMethodId: '2488f7b7-5d1c-4d65-b85c-4cbcf253fd93',
+  labelFormat: 'pdf',
+};
+
+describe('InPost ShipX', () => {
+  const SHIPX = 'https://sandbox-api-shipx-pl.easypack24.net';
+  const adapter = new InpostAdapter({ apiToken: 'tok', organizationId: '42', sandbox: true });
+
+  it('builds a locker payload with a template and target point', () => {
+    const p = buildShipxPayload(request, {});
+    expect(p.parcels).toEqual([{ template: 'medium' }]);
+    expect(p.custom_attributes).toEqual({ target_point: 'KRA010', sending_method: 'dispatch_order' });
+    expect(p.receiver).toMatchObject({ first_name: 'Jan', last_name: 'Kowalski', phone: '600700800', address: undefined });
+    expect(p.sender.address).toEqual({ street: 'ul. Magazynowa', building_number: '5', city: 'Warszawa', post_code: '02-222', country_code: 'PL' });
+  });
+
+  it('builds a courier payload in millimetres, with insurance covering COD', () => {
+    const p = buildShipxPayload({ ...request, service: 'inpost_courier_standard', codAmount: '199.90', pickupPointId: null }, { sendingMethod: 'parcel_locker' });
+    expect(p.parcels).toEqual([{ dimensions: { length: '300', width: '200', height: '100', unit: 'mm' }, weight: { amount: '1.5', unit: 'kg' } }]);
+    expect(p.receiver.address).toMatchObject({ street: 'ul. Długa', building_number: '5/3' });
+    expect(p.cod).toEqual({ amount: 199.9, currency: 'PLN' });
+    expect(p.insurance).toEqual({ amount: 199.9, currency: 'PLN' });
+    expect(p.custom_attributes.sending_method).toBe('parcel_locker');
+  });
+
+  it('refuses a locker label without a pickup point before calling InPost', async () => {
+    const status = await adapter.createShipment({ ...request, pickupPointId: null });
+    expect(status.state).toBe('failed');
+  });
+
+  it('creates, polls until confirmed, and downloads the label', async () => {
+    let posts = 0;
+    let polls = 0;
+    server.use(
+      http.post(`${SHIPX}/v1/organizations/42/shipments`, ({ request: req }) => {
+        posts++;
+        expect(req.headers.get('authorization')).toBe('Bearer tok');
+        return HttpResponse.json({ id: 9001, status: 'created', tracking_number: null }, { status: 201 });
+      }),
+      http.get(`${SHIPX}/v1/shipments/9001`, () => {
+        polls++;
+        return HttpResponse.json(polls < 2 ? { id: 9001, status: 'created', tracking_number: null } : { id: 9001, status: 'confirmed', tracking_number: '620111222333444555666777' });
+      }),
+      http.get(`${SHIPX}/v1/shipments/9001/label`, ({ request: req }) => {
+        const url = new URL(req.url);
+        expect(url.searchParams.get('format')).toBe('Pdf');
+        expect(url.searchParams.get('type')).toBe('A6');
+        return new HttpResponse('%PDF-1.4', { headers: { 'Content-Type': 'application/pdf' } });
+      }),
+    );
+    const created = await adapter.createShipment(request);
+    expect(created).toMatchObject({ state: 'pending', externalId: '9001' });
+    expect((await adapter.refreshShipment({ externalId: '9001' })).state).toBe('pending');
+    const done = await adapter.refreshShipment({ externalId: '9001' });
+    expect(done).toMatchObject({ state: 'created', trackingNumber: '620111222333444555666777', carrierCode: 'INPOST' });
+    expect(done.trackingUrl).toContain('620111222333444555666777');
+    expect((await adapter.getLabels(['9001'], { format: 'pdf', size: 'A6' })).toString()).toBe('%PDF-1.4');
+    expect(posts).toBe(1);
+  });
+
+  it('does not retry a failed create (a retry could buy a second label)', async () => {
+    let posts = 0;
+    server.use(
+      http.post(`${SHIPX}/v1/organizations/42/shipments`, () => {
+        posts++;
+        return new HttpResponse(null, { status: 502 });
+      }),
+    );
+    await expect(adapter.createShipment(request)).rejects.toThrow(/502/);
+    expect(posts).toBe(1);
+  });
+
+  it('maps tracking statuses', async () => {
+    server.use(http.get(`${SHIPX}/v1/tracking/:n`, () => HttpResponse.json({ status: 'delivered' })));
+    expect(await adapter.deliveryStatus({ trackingNumber: '1' })).toBe('delivered');
+  });
+});
+
+describe('Allegro Delivery (Wysyłam z Allegro)', () => {
+  const API = 'https://api.allegro.pl.allegrosandbox.pl';
+  const creds: AllegroCredentials = { clientId: 'c', clientSecret: 's', sandbox: true, accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 3600_000).toISOString() };
+  const adapter = new AllegroShippingAdapter(new AllegroClient({ get: () => creds, save: async () => {} }), { codIban: 'PL61109010140000071219812874', codOwnerName: 'Luora' });
+
+  it('uses the buyer’s delivery method and our shipment id as the command id', () => {
+    const cmd = buildCreateCommand({ ...request, service: 'buyer_choice', codAmount: '50.00' }, { codIban: 'PL1', codOwnerName: 'Luora' }, request.shipmentId);
+    expect(cmd.commandId).toBe(request.shipmentId);
+    expect(cmd.input.deliveryMethodId).toBe('2488f7b7-5d1c-4d65-b85c-4cbcf253fd93');
+    expect(cmd.input.receiver.point).toBe('KRA010');
+    expect(cmd.input.packages[0]).toMatchObject({ type: 'PACKAGE', length: { value: 30, unit: 'CENTIMETER' }, weight: { value: 1.5, unit: 'KILOGRAMS' } });
+    expect(cmd.input.cashOnDelivery).toEqual({ amount: '50.00', currency: 'PLN', ownerName: 'Luora', iban: 'PL1' });
+  });
+
+  it('refuses COD without an IBAN', async () => {
+    const noIban = new AllegroShippingAdapter(new AllegroClient({ get: () => creds, save: async () => {} }), {});
+    expect((await noIban.createShipment({ ...request, service: 'buyer_choice', codAmount: '10.00' })).state).toBe('failed');
+  });
+
+  it('creates asynchronously, then reads the waybill', async () => {
+    let commandPolls = 0;
+    server.use(
+      http.post(`${API}/shipment-management/shipments/create-commands`, async ({ request: req }) => {
+        const body = (await req.json()) as { commandId: string };
+        expect(body.commandId).toBe(request.shipmentId);
+        return HttpResponse.json(body, { status: 201, headers: { 'Retry-After': '2' } });
+      }),
+      http.get(`${API}/shipment-management/shipments/create-commands/:id`, ({ params }) => {
+        commandPolls++;
+        return HttpResponse.json(
+          commandPolls < 2 ? { commandId: params.id, status: 'IN_PROGRESS', errors: [] } : { commandId: params.id, status: 'SUCCESS', errors: [], shipmentId: 'shp-1' },
+          { headers: { 'Retry-After': '1' } },
+        );
+      }),
+      http.get(`${API}/shipment-management/shipments/shp-1`, () =>
+        HttpResponse.json({ id: 'shp-1', carrier: 'INPOST', packages: [{ waybill: '6209999', transportingInfo: [{ carrierId: 'INPOST', carrierWaybill: '6209999' }] }] }),
+      ),
+    );
+    const created = await adapter.createShipment({ ...request, service: 'buyer_choice' });
+    expect(created).toMatchObject({ state: 'pending', commandId: request.shipmentId, retryAfterSeconds: 2 });
+    expect(await adapter.refreshShipment({ externalId: null, commandId: request.shipmentId })).toMatchObject({ state: 'pending', retryAfterSeconds: 1 });
+    expect(await adapter.refreshShipment({ externalId: null, commandId: request.shipmentId })).toMatchObject({
+      state: 'created',
+      externalId: 'shp-1',
+      trackingNumber: '6209999',
+      carrierCode: 'INPOST',
+    });
+  });
+
+  it('reports command errors', async () => {
+    server.use(
+      http.get(`${API}/shipment-management/shipments/create-commands/:id`, ({ params }) =>
+        HttpResponse.json({ commandId: params.id, status: 'ERROR', errors: [{ code: 'X', userMessage: 'Wrong postal code' }] }),
+      ),
+    );
+    expect(await adapter.refreshShipment({ externalId: null, commandId: 'c1' })).toMatchObject({ state: 'failed', error: 'Wrong postal code' });
+  });
+});

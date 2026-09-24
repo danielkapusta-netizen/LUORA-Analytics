@@ -1,0 +1,52 @@
+{
+  "id": "gid://shopify/Order/5612345678901",
+  "name": "#1042",
+  "createdAt": "2026-09-20T08:15:00Z",
+  "updatedAt": "2026-09-20T08:16:30Z",
+  "processedAt": "2026-09-20T08:15:00Z",
+  "cancelledAt": null,
+  "displayFinancialStatus": "PAID",
+  "displayFulfillmentStatus": "UNFULFILLED",
+  "email": "jan.kowalski@example.com",
+  "phone": null,
+  "paymentGatewayNames": ["shopify_payments"],
+  "totalPriceSet": { "shopMoney": { "amount": "171.98", "currencyCode": "PLN" } },
+  "totalShippingPriceSet": { "shopMoney": { "amount": "12.99", "currencyCode": "PLN" } },
+  "shippingAddress": {
+    "name": "Jan Kowalski",
+    "firstName": "Jan",
+    "lastName": "Kowalski",
+    "company": null,
+    "address1": "ul. Długa 5/3",
+    "address2": null,
+    "city": "Kraków",
+    "zip": "31147",
+    "countryCodeV2": "PL",
+    "phone": "+48 600 700 800"
+  },
+  "shippingLine": { "title": "InPost Paczkomat 24/7", "code": "inpost-locker", "source": "shopify" },
+  "customAttributes": [
+    { "key": "Gift wrap", "value": "no" },
+    { "key": "Paczkomat", "value": "KRA010 – ul. Długa 5, Kraków" }
+  ],
+  "lineItems": {
+    "nodes": [
+      {
+        "id": "gid://shopify/LineItem/1",
+        "sku": "LUO-MUG-01",
+        "name": "Kubek ceramiczny Luora 350 ml",
+        "quantity": 2,
+        "originalUnitPriceSet": { "shopMoney": { "amount": "39.99", "currencyCode": "PLN" } },
+        "variant": { "id": "gid://shopify/ProductVariant/11", "inventoryItem": { "id": "gid://shopify/InventoryItem/111" } }
+      },
+      {
+        "id": "gid://shopify/LineItem/2",
+        "sku": "",
+        "name": "Gift card",
+        "quantity": 1,
+        "originalUnitPriceSet": { "shopMoney": { "amount": "79.01", "currencyCode": "PLN" } },
+        "variant": null
+      }
+    ]
+  }
+}
