@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "luora-os",
+  "main": "src/worker/cloudflare.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "observability": { "enabled": true },
+
+  // Create with: wrangler d1 create luora  (then paste the id here)
+  "d1_databases": [{ "binding": "DB", "database_name": "luora", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "drizzle" }],
+
+  // Create with: wrangler queues create luora-jobs && wrangler queues create luora-jobs-dlq
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "luora-jobs" }],
+    "consumers": [{ "queue": "luora-jobs", "max_batch_size": 5, "max_batch_timeout": 2, "max_retries": 10, "dead_letter_queue": "luora-jobs-dlq" }]
+  },
+
+  // Create with: wrangler r2 bucket create luora-labels
+  "r2_buckets": [{ "binding": "LABELS", "bucket_name": "luora-labels" }],
+
+  // Keep in sync with CRON_JOBS in src/worker/consumer.ts
+  "triggers": { "crons": ["*/3 * * * *", "*/2 * * * *", "15 */2 * * *", "30 2 * * *"] },
+
+  // Secrets (wrangler secret put): ENCRYPTION_KEY, ADMIN_EMAIL, ADMIN_PASSWORD
+  "vars": {
+    "APP_URL": "https://luora-os.example.workers.dev",
+    "INTEGRATIONS_MODE": "mock",
+    "SYNC_INTERVAL_MINUTES": "3"
+  }
+}

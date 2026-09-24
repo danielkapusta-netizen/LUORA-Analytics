@@ -218,12 +218,10 @@ export async function savePreset(input: {
   isDefault: boolean;
 }): Promise<void> {
   const db = getDb();
-  await db.transaction(async (tx) => {
-    if (input.isDefault) await tx.update(packagePresets).set({ isDefault: false });
-    const { id, ...values } = input;
-    if (id) await tx.update(packagePresets).set(values).where(eq(packagePresets.id, id));
-    else await tx.insert(packagePresets).values(values);
-  });
+  const { id, ...values } = input;
+  const save = id ? db.update(packagePresets).set(values).where(eq(packagePresets.id, id)) : db.insert(packagePresets).values(values);
+  if (input.isDefault) await db.batch([db.update(packagePresets).set({ isDefault: false }), save]);
+  else await save;
 }
 
 export async function deletePreset(id: string): Promise<void> {

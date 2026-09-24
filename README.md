@@ -17,37 +17,57 @@ through **InPost** and **Allegro Delivery (Wysyłam z Allegro)**.
   - A dry-run switch per account lets you watch what would be sent before going live.
 - **Analytics:** revenue per day by marketplace, average order value, top products, labels by carrier, time to ship, and the open backlog.
 
+## Runs on Cloudflare
+
+| Piece | Cloudflare service |
+|---|---|
+| Web app (Next.js) | **Workers**, via [OpenNext](https://opennext.js.org/cloudflare) |
+| Database | **D1** (SQLite), schema in `src/server/db/schema.ts`, migrations in `drizzle/` |
+| Background jobs | **Queues** (`luora-jobs`, with a dead-letter queue) |
+| Schedules | **Cron Triggers** (order sync, label sweep, delivery check, nightly stock check) |
+| Label files | **R2** (`luora-labels`) |
+
+Queues and Cron Triggers need the **Workers Paid** plan.
+
 ## Quick start (demo mode, no accounts needed)
 
-Requirements: Node 22.12+, pnpm 10, PostgreSQL 13+.
+Requirements: Node 22.12+ and pnpm 10. Local D1, Queues and R2 are simulated by wrangler, so no database install is needed.
 
 ```bash
 pnpm install
-cp .env.example .env                 # INTEGRATIONS_MODE=mock is the default here
-createdb luora                       # or point DATABASE_URL at any empty database
-pnpm db:migrate
-pnpm db:seed                         # admin user, demo accounts, shipping rules, products
-pnpm dev                             # web app on http://localhost:3000
-pnpm worker                          # in a second terminal: sync, labels, tracking, stock
+cp .dev.vars.example .dev.vars       # INTEGRATIONS_MODE=mock
+pnpm db:migrate:local
+pnpm db:seed:local                   # admin user, demo accounts, rules, products
+pnpm preview                         # the real Worker locally on http://localhost:8787
 ```
 
-Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env`.
+- Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.dev.vars`.
+- Crons don't fire on their own locally. Trigger the order sync with
+  `curl "localhost:8787/__scheduled?cron=*/3+*+*+*+*"` (run `wrangler dev` with `--test-scheduled`, which `pnpm preview` passes through).
+- `pnpm dev` (plain `next dev`) also works for UI work. Background jobs only run under `pnpm preview`.
 
-In mock mode nothing is sent anywhere:
+## Deploying
 
-- Each marketplace generates 14 fake orders, plus a new one now and then.
-- Labels are real PDFs marked "TEST LABEL".
-
-With Docker, run `docker compose up -d --build`, then `docker compose run --rm worker pnpm db:seed`.
+```bash
+npx wrangler login
+npx wrangler d1 create luora                 # paste the database_id into wrangler.jsonc
+npx wrangler queues create luora-jobs
+npx wrangler queues create luora-jobs-dlq
+npx wrangler r2 bucket create luora-labels
+npx wrangler secret put ENCRYPTION_KEY       # openssl rand -base64 32 — keep it safe
+npx wrangler secret put ADMIN_EMAIL
+npx wrangler secret put ADMIN_PASSWORD
+# In wrangler.jsonc "vars": set APP_URL to your workers.dev or custom domain, INTEGRATIONS_MODE to "live"
+pnpm db:migrate:remote
+pnpm deploy
+curl -X POST https://<your-app>/api/admin/seed   # first run only: creates the admin user
+```
 
 ## Connecting real accounts
 
-1. In `.env`:
-   - Set `INTEGRATIONS_MODE=live`.
-   - Set a real `ENCRYPTION_KEY` (`openssl rand -base64 32`). Credentials are stored encrypted with it, so keep it safe.
-   - Set `APP_URL` to the public address of the app.
+1. Set `INTEGRATIONS_MODE` to `live` and `APP_URL` to the public address (in `wrangler.jsonc`, or `.dev.vars` locally). Make sure `ENCRYPTION_KEY` is set; credentials are stored encrypted with it.
 2. Go to **Settings → Integrations**, add each account, and press **Test**.
-3. You can also check an account from the command line. This command is read-only: it never changes anything.
+3. You can also check an account from the command line (against the local D1 database). This command is read-only: it never changes anything.
    ```bash
    pnpm integration:check "Allegro – main"
    ```
@@ -67,15 +87,15 @@ Parcel locker codes for Shopify orders are read from order note attributes whose
 ## How it works
 
 ```
-Next.js app (UI + server actions + API routes) ─┐
-                                                 ├── PostgreSQL (orders, labels, stock, pg-boss job queue)
-Worker (pnpm worker) ────────────────────────────┘
-   ├─ orders-sync       every N min per account → upsert orders, take stock
-   ├─ shipment-create   buy label → poll until the carrier confirms → store PDF
-   ├─ tracking-push     tracking number → marketplace, order → shipped
-   ├─ stock-push        master stock → every linked listing (debounced per account)
-   ├─ delivery-check    every 2 h: carrier tracking → order delivered
-   └─ shipment-sweep / stock-reconcile   recover stuck labels, nightly stock drift check
+One Worker (src/worker/cloudflare.ts)
+   ├─ fetch      Next.js app: UI, server actions, API routes      ─┐
+   ├─ scheduled  Cron Triggers → sync all accounts, label sweep,    ├── D1 (orders, labels, stock, job locks)
+   │             delivery check, nightly stock reconcile           │   R2 (label PDFs/ZPL)
+   └─ queue      luora-jobs consumer:                              ─┘
+        orders-sync      upsert orders, take stock
+        shipment-create  buy label → shipment-poll until the carrier confirms → store file in R2
+        tracking-push    tracking number → marketplace, order → shipped
+        stock-push       master stock → every linked listing (debounced per account)
 ```
 
 - Each marketplace and carrier has an adapter in `src/server/integrations/`, made of three files:
@@ -90,7 +110,9 @@ Guards against buying a label twice:
 - **Duplicate clicks:** the database allows only one live label per order.
 - **Allegro retries:** Allegro label requests reuse the label's own id as the command id.
 - **InPost retries:** InPost label requests are never retried automatically.
-- **Stuck labels:** a sweep job re-checks labels left "pending" (for example after a worker restart) instead of buying again.
+- **Stuck labels:** a sweep job re-checks labels left "pending" (for example when a poll message ran out of retries) instead of buying again.
+
+D1 has no interactive transactions, so writes that belong together (a new order with its items, stock changes, a finished label) go in one `db.batch()`. Status changes are compare-and-set on the old status. Cloudflare Queues has no built-in dedupe, so one-sync-per-account and the stock-push debounce use a small `job_locks` table.
 
 Why each API endpoint was chosen:
 
@@ -104,10 +126,9 @@ Why each API endpoint was chosen:
 
 ```bash
 pnpm lint && pnpm typecheck
-pnpm test                                                   # unit + mocked-HTTP adapter tests
-TEST_DATABASE_URL=postgres://…/luora_test pnpm test         # + the full flow against PostgreSQL
-pnpm build && pnpm start & pnpm worker &                    # then, in mock mode:
-PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome pnpm test:e2e      # browser test: login → label → batch → analytics
+pnpm test          # unit, mocked-HTTP adapter tests, queue consumer, and the full flow on local D1 + R2
+pnpm preview &     # then, in mock mode, after migrating and seeding local D1:
+E2E_BASE_URL=http://localhost:8787 PLAYWRIGHT_CHROMIUM_PATH=/path/to/chrome pnpm test:e2e
 ```
 
 The adapter tests check requests and responses against payloads written from each provider's API documentation.
@@ -122,12 +143,14 @@ The adapter tests check requests and responses against payloads written from eac
 
 ```
 src/app/(app)/         orders, shipments, inventory, analytics, settings pages
-src/app/api/           label downloads, Allegro OAuth, Shopify webhooks, health check
-src/server/db/         Drizzle schema, migrations runner, seed
+src/app/api/           label downloads, Allegro OAuth, Shopify webhooks, first-run seed, health check
+src/server/db/         Drizzle schema (D1/SQLite), seed
+src/server/cf.ts       access to the D1 / Queue / R2 bindings
 src/server/integrations/{marketplaces,carriers}/   one folder per provider (+ mock)
 src/server/services/   business logic
-src/server/jobs/       pg-boss queues and handlers
-src/worker/            worker entry point
-tests/                 Vitest (unit, adapter, database flow) and Playwright (e2e)
-drizzle/               SQL migrations (generate with `pnpm db:generate`)
+src/server/jobs/       job names, enqueue (Cloudflare Queues), handlers
+src/worker/            Worker entry: OpenNext fetch + queue consumer + cron
+tests/                 Vitest (unit, adapter, consumer, D1 flow) and Playwright (e2e)
+drizzle/               D1 migrations (generate with `pnpm db:generate`)
+wrangler.jsonc         bindings, crons and vars
 ```

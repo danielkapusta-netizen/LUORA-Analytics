@@ -1,9 +1,11 @@
 import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
-import { getDb } from '../db/client';
+import { getCfEnv } from '../cf';
+import { chunk, getDb } from '../db/client';
 import {
   carrierAccounts,
   labelFiles,
+  orderEvents,
   orders,
   packagePresets,
   shipmentBatches,
@@ -82,9 +84,12 @@ export interface ShipmentInput {
   batchId?: string | null;
 }
 
+/** D1/SQLite reports unique index violations only in the error message. */
 function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string } };
-  return e?.code === '23505' || e?.cause?.code === '23505';
+  for (let e = err as { message?: string; cause?: unknown } | undefined; e; e = e.cause as typeof e) {
+    if (e.message?.includes('UNIQUE constraint failed')) return true;
+  }
+  return false;
 }
 
 /** Records a shipment and queues the label purchase. Returns the new shipment id. */
@@ -215,8 +220,15 @@ async function applyStatus(shipment: Shipment, carrier: CarrierAccount, status: 
   // Created: download the label while we are here, so printing never waits on the carrier.
   const adapter = await getCarrierAdapter(carrier);
   const label = await adapter.getLabels([status.externalId], { format: shipment.labelFormat, size: shipment.labelSize });
-  await db.transaction(async (tx) => {
-    await tx
+  // Store the file first; the D1 rows are only written once it is safely in R2.
+  const r2Key = `labels/${shipment.id}.${shipment.labelFormat}`;
+  await getCfEnv().LABELS.put(r2Key, label, {
+    httpMetadata: { contentType: shipment.labelFormat === 'pdf' ? 'application/pdf' : 'application/octet-stream' },
+  });
+  {
+    const tx = db;
+    await tx.batch([
+      tx
       .update(shipments)
       .set({
         state: 'created',
@@ -227,14 +239,15 @@ async function applyStatus(shipment: Shipment, carrier: CarrierAccount, status: 
         carrierCode: status.carrierCode ?? null,
         error: null,
       })
-      .where(eq(shipments.id, shipment.id));
-    await tx
-      .insert(labelFiles)
-      .values({ shipmentId: shipment.id, format: shipment.labelFormat, size: shipment.labelSize, content: label })
-      .onConflictDoUpdate({ target: labelFiles.shipmentId, set: { content: label } });
-    await logEvent(tx, shipment.orderId, 'label', `Label created: ${carrier.name}, tracking ${status.trackingNumber ?? '—'}`);
+      .where(eq(shipments.id, shipment.id)),
+      tx
+        .insert(labelFiles)
+        .values({ shipmentId: shipment.id, format: shipment.labelFormat, size: shipment.labelSize, r2Key })
+        .onConflictDoUpdate({ target: labelFiles.shipmentId, set: { r2Key } }),
+      tx.insert(orderEvents).values({ orderId: shipment.orderId, type: 'label', message: `Label created: ${carrier.name}, tracking ${status.trackingNumber ?? '—'}` }),
+    ]);
     await changeStatus(tx, shipment.orderId, 'label_created', { reason: 'label created', force: true });
-  });
+  }
   await enqueue(JOBS.trackingPush, { shipmentId: shipment.id });
 }
 
@@ -279,11 +292,9 @@ export async function cancelShipment(shipmentId: string, userId: string): Promis
   if (shipment.externalId && shipment.state === 'created') {
     await (await getCarrierAdapter(carrier)).cancelShipment(shipment.externalId);
   }
-  await db.transaction(async (tx) => {
-    await tx.update(shipments).set({ state: 'cancelled' }).where(eq(shipments.id, shipment.id));
-    await logEvent(tx, order.id, 'label', `Label cancelled (${carrier.name})`, { userId });
-    if (order.status === 'label_created') await changeStatus(tx, order.id, 'processing', { userId, reason: 'label cancelled' });
-  });
+  await db.update(shipments).set({ state: 'cancelled' }).where(eq(shipments.id, shipment.id));
+  await logEvent(db, order.id, 'label', `Label cancelled (${carrier.name})`, { userId });
+  if (order.status === 'label_created') await changeStatus(db, order.id, 'processing', { userId, reason: 'label cancelled' });
 }
 
 /** Re-queues a failed shipment with the same settings. */
@@ -305,9 +316,16 @@ export async function retryShipment(shipmentId: string, userId: string): Promise
   );
 }
 
+async function readLabel(r2Key: string): Promise<Buffer | null> {
+  const object = await getCfEnv().LABELS.get(r2Key);
+  return object ? Buffer.from(await object.arrayBuffer()) : null;
+}
+
 export async function getLabel(shipmentId: string) {
   const [file] = await getDb().select().from(labelFiles).where(eq(labelFiles.shipmentId, shipmentId));
-  return file ?? null;
+  if (!file) return null;
+  const content = await readLabel(file.r2Key);
+  return content ? { ...file, content } : null;
 }
 
 /** Joins labels into one printable file: PDFs are merged, ZPL is concatenated. */
@@ -324,11 +342,16 @@ export async function mergeLabels(files: { format: LabelFormat; content: Buffer 
 }
 
 export async function mergedLabelsFor(shipmentIds: string[]) {
-  const files = await getDb()
-    .select({ format: labelFiles.format, content: labelFiles.content, shipmentId: labelFiles.shipmentId })
-    .from(labelFiles)
-    .where(inArray(labelFiles.shipmentId, shipmentIds))
-    .orderBy(asc(labelFiles.createdAt));
+  const rows = [];
+  for (const ids of chunk(shipmentIds)) {
+    rows.push(...(await getDb().select().from(labelFiles).where(inArray(labelFiles.shipmentId, ids))));
+  }
+  rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const files = [];
+  for (const row of rows) {
+    const content = await readLabel(row.r2Key);
+    if (content) files.push({ format: row.format, content });
+  }
   return mergeLabels(files);
 }
 
@@ -341,7 +364,8 @@ export async function mergedLabelsFor(shipmentIds: string[]) {
 export async function createBatch(orderIds: string[], userId: string): Promise<string> {
   const db = getDb();
   const data = await loadRoutingData();
-  const selected = await db.select().from(orders).where(inArray(orders.id, orderIds));
+  const selected = [];
+  for (const ids of chunk(orderIds)) selected.push(...(await db.select().from(orders).where(inArray(orders.id, ids))));
   const [batch] = await db.insert(shipmentBatches).values({ createdBy: userId, total: selected.length }).returning({ id: shipmentBatches.id });
 
   const skipped: { orderId: string; reason: string }[] = [];
@@ -388,7 +412,7 @@ export async function getBatch(batchId: string) {
     .where(eq(shipments.batchId, batchId))
     .orderBy(asc(orders.externalNumber));
   const skippedOrders = batch.skipped.length
-    ? await db.select().from(orders).where(inArray(orders.id, batch.skipped.map((s) => s.orderId)))
+    ? (await Promise.all(chunk(batch.skipped.map((s) => s.orderId)).map((ids) => db.select().from(orders).where(inArray(orders.id, ids))))).flat()
     : [];
   return { batch, rows, skipped: batch.skipped.map((s) => ({ ...s, order: skippedOrders.find((o) => o.id === s.orderId) ?? null })) };
 }

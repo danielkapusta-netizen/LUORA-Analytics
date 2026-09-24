@@ -1,0 +1,13 @@
+# Local secrets and overrides for `pnpm dev` / `pnpm preview`. Copy to .dev.vars.
+# In production set secrets with: wrangler secret put ENCRYPTION_KEY (etc.)
+
+# 32 random bytes, base64 (openssl rand -base64 32). Encrypts stored credentials.
+ENCRYPTION_KEY=
+
+# First admin account, created by `pnpm db:seed:local` or POST /api/admin/seed
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=change-me-please
+
+# Overrides for the vars in wrangler.jsonc
+APP_URL=http://localhost:3000
+INTEGRATIONS_MODE=mock

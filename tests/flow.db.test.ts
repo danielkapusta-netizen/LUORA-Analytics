@@ -1,11 +1,13 @@
-// Full order → label → tracking → stock flow against a real PostgreSQL database,
-// using the mock marketplaces and carriers. Runs only when TEST_DATABASE_URL is set:
-//   TEST_DATABASE_URL=postgres://luora:luora@localhost:5432/luora_test pnpm test
+// Full order → label → tracking → stock flow against a local D1 database and
+// R2 bucket (wrangler's simulators), using the mock marketplaces and carriers.
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const url = process.env.TEST_DATABASE_URL;
-
-describe.skipIf(!url)('order flow (database)', () => {
+describe('order flow (D1)', { timeout: 60_000 }, () => {
+  const persistTo = mkdtempSync(path.join(tmpdir(), 'luora-d1-'));
+  let dispose: (() => Promise<void>) | undefined;
   type Queued = { name: string; data: unknown };
   const queue: Queued[] = [];
   // Loaded after the environment is pointed at the test database.
@@ -31,16 +33,13 @@ describe.skipIf(!url)('order flow (database)', () => {
   }
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = url;
     process.env.INTEGRATIONS_MODE = 'mock';
+    const { localBindings, applyMigrations } = await import('@/server/local-bindings');
+    const bindings = await localBindings({ persistTo });
+    dispose = bindings.dispose;
+    await applyMigrations(bindings.env.DB);
     const db = await import('@/server/db/client');
     const orm = await import('drizzle-orm');
-    const { runMigrations } = await import('@/server/db/migrate');
-    await runMigrations();
-    await db.getDb().execute(orm.sql`
-      truncate users, sessions, marketplace_accounts, carrier_accounts, orders, order_items, order_events,
-        package_presets, shipping_rules, shipment_batches, shipments, label_files, products,
-        product_listings, stock_movements, stock_sync_log cascade`);
     const queueModule = await import('@/server/jobs/queue');
     queueModule.setEnqueueImplementation(async (name, data) => void queue.push({ name, data }));
     const { seed } = await import('@/server/db/seed');
@@ -56,11 +55,12 @@ describe.skipIf(!url)('order flow (database)', () => {
       analytics: await import('@/server/services/analytics'),
       handlers: await import('@/server/jobs/handlers'),
     };
-  }, 60_000);
+  });
 
   afterAll(async () => {
     (await import('@/server/jobs/queue')).setEnqueueImplementation(undefined);
-    await m?.db.closeDb();
+    await dispose?.();
+    rmSync(persistTo, { recursive: true, force: true });
   });
 
   const allOrders = () => m.db.getDb().select().from(m.schema.orders);
@@ -138,12 +138,12 @@ describe.skipIf(!url)('order flow (database)', () => {
     const order = (await allOrders()).find((o) => o.marketplace === 'allegro' && o.status === 'new')!;
     const items = await m.db.getDb().select().from(m.schema.orderItems).where(m.orm.eq(m.schema.orderItems.orderId, order.id));
     const before = await productStock();
-    await m.db.getDb().transaction((tx) => m.workflow.changeStatus(tx, order.id, 'cancelled', {}));
+    await m.workflow.changeStatus(m.db.getDb(), order.id, 'cancelled', {});
     const cancelled = await productStock();
     for (const i of items) expect(cancelled[i.sku!]).toBe(before[i.sku!] + items.filter((x) => x.sku === i.sku).reduce((s, x) => s + x.quantity, 0));
-    await m.db.getDb().transaction((tx) => m.workflow.changeStatus(tx, order.id, 'new', {}));
+    await m.workflow.changeStatus(m.db.getDb(), order.id, 'new', {});
     expect(await productStock()).toEqual(before);
-    await expect(m.db.getDb().transaction((tx) => m.workflow.changeStatus(tx, order.id, 'delivered', {}))).rejects.toThrow(/Can't move/);
+    await expect(m.workflow.changeStatus(m.db.getDb(), order.id, 'delivered', {})).rejects.toThrow(/Can't move/);
     queue.length = 0;
   });
 

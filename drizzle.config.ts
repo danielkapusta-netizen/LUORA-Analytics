@@ -1,10 +1,8 @@
 import { defineConfig } from 'drizzle-kit';
 
+// Migrations are generated here and applied with `wrangler d1 migrations apply`.
 export default defineConfig({
-  dialect: 'postgresql',
+  dialect: 'sqlite',
   schema: './src/server/db/schema.ts',
   out: './drizzle',
-  dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgres://luora:luora@localhost:5432/luora',
-  },
 });

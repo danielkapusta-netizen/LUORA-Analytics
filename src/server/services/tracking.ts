@@ -32,11 +32,9 @@ export async function runPushTracking(shipmentId: string): Promise<void> {
     throw err;
   }
 
-  await db.transaction(async (tx) => {
-    await tx.update(shipments).set({ trackingPushedAt: new Date(), trackingPushError: null }).where(eq(shipments.id, shipment.id));
-    await logEvent(tx, order.id, 'tracking', `Tracking ${shipment.trackingNumber} sent to ${account.name}`);
-    await changeStatus(tx, order.id, 'shipped', { reason: 'tracking sent to the marketplace', force: true });
-  });
+  await db.update(shipments).set({ trackingPushedAt: new Date(), trackingPushError: null }).where(eq(shipments.id, shipment.id));
+  await logEvent(db, order.id, 'tracking', `Tracking ${shipment.trackingNumber} sent to ${account.name}`);
+  await changeStatus(db, order.id, 'shipped', { reason: 'tracking sent to the marketplace', force: true });
 }
 
 /** Manually re-queues a tracking push that failed. */
@@ -80,16 +78,14 @@ export async function runDeliveryCheck(): Promise<{ checked: number; delivered: 
         carrierCode: shipment.carrierCode,
       });
       if (status === shipment.deliveryStatus) continue;
-      await db.transaction(async (tx) => {
-        await tx
-          .update(shipments)
-          .set({ deliveryStatus: status, ...(status === 'delivered' ? { deliveredAt: new Date() } : {}) })
-          .where(eq(shipments.id, shipment.id));
-        if (status === 'delivered') {
-          delivered++;
-          await changeStatus(tx, shipment.orderId, 'delivered', { reason: 'carrier reported delivery' });
-        }
-      });
+      await db
+        .update(shipments)
+        .set({ deliveryStatus: status, ...(status === 'delivered' ? { deliveredAt: new Date() } : {}) })
+        .where(eq(shipments.id, shipment.id));
+      if (status === 'delivered') {
+        delivered++;
+        await changeStatus(db, shipment.orderId, 'delivered', { reason: 'carrier reported delivery' });
+      }
     } catch (err) {
       console.error(`[delivery-check] ${shipment.trackingNumber}:`, err instanceof Error ? err.message : err);
     }

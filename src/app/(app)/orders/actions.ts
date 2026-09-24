@@ -63,7 +63,7 @@ export async function bulkStatusAction(_prev: ActionResult, formData: FormData):
   const errors: string[] = [];
   for (const id of selected) {
     try {
-      await getDb().transaction((tx) => changeStatus(tx, id, status, { userId: user.id }));
+      await changeStatus(getDb(), id, status, { userId: user.id });
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -87,7 +87,7 @@ export async function changeStatusAction(orderId: string, _prev: ActionResult, f
   const user = await requireUser();
   const status = String(formData.get('status')) as OrderStatus;
   return attempt(async () => {
-    await getDb().transaction((tx) => changeStatus(tx, orderId, status, { userId: user.id }));
+    await changeStatus(getDb(), orderId, status, { userId: user.id });
     refresh(orderId);
     return 'Status changed';
   });

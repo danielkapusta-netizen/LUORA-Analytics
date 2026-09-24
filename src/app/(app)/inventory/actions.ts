@@ -29,10 +29,12 @@ export async function createProductAction(_prev: ActionResult, formData: FormDat
   return attempt(async () => {
     if (!sku || !name) throw new Error('SKU and name are required');
     if (!Number.isInteger(stock) || stock < 0) throw new Error('Stock must be a whole number ≥ 0');
-    await getDb().transaction(async (tx) => {
-      const [p] = await tx.insert(products).values({ sku, name, stock }).returning({ id: products.id });
-      if (stock) await tx.insert(stockMovements).values({ productId: p.id, delta: stock, reason: 'manual', userId: user.id, note: 'Created' });
-    });
+    const db = getDb();
+    const id = crypto.randomUUID();
+    await db.batch([
+      db.insert(products).values({ id, sku, name, stock }),
+      ...(stock ? [db.insert(stockMovements).values({ productId: id, delta: stock, reason: 'manual', userId: user.id, note: 'Created' })] : []),
+    ] as unknown as Parameters<typeof db.batch>[0]);
     revalidatePath('/inventory');
     return `Product ${sku} created`;
   });

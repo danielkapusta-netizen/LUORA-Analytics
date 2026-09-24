@@ -1,16 +1,20 @@
+// Runs against the LOCAL D1 database (accounts added in `pnpm dev`).
 // Read-only connection check for a marketplace or carrier account:
 //   pnpm integration:check "Allegro – main"      (name or id)
 // Marketplaces: verifies the credentials and counts orders the first sync would import.
 // Carriers: verifies the credentials and lists the available services.
 // Nothing is written to the database or sent to the marketplace.
 import { eq, or, type AnyColumn } from 'drizzle-orm';
-import { closeDb, getDb } from '../src/server/db/client';
+import { getDb } from '../src/server/db/client';
+import { localBindings } from '../src/server/local-bindings';
 import { carrierAccounts, marketplaceAccounts } from '../src/server/db/schema';
 import { getCarrierAdapter, getMarketplaceAdapter } from '../src/server/services/accounts';
 
 const UUID = /^[0-9a-f-]{36}$/i;
+let bindings: Awaited<ReturnType<typeof localBindings>> | undefined;
 
 async function main() {
+  bindings = await localBindings();
   const target = process.argv[2];
   if (!target) throw new Error('Usage: pnpm integration:check <account name or id>');
   const db = getDb();
@@ -50,4 +54,4 @@ main()
     console.error(`✗ ${err instanceof Error ? err.message : err}`);
     process.exitCode = 1;
   })
-  .finally(() => closeDb());
+  .finally(() => bindings?.dispose());

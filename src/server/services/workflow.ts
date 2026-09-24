@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Tx } from '../db/client';
 import { orders, type OrderStatus } from '../db/schema';
 import { enqueue, JOBS } from '../jobs/queue';
@@ -45,17 +45,20 @@ export async function changeStatus(
   to: OrderStatus,
   options: { userId?: string | null; reason?: string; force?: boolean } = {},
 ): Promise<void> {
-  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).for('update');
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
   if (!order) throw new TransitionError('Order not found');
   if (order.status === to) return;
   if (!options.force && !canTransition(order.status, to)) {
     throw new TransitionError(`Can't move an order from "${STATUS_LABELS[order.status]}" to "${STATUS_LABELS[to]}"`);
   }
 
-  await db
+  // Compare-and-set on the old status: without row locks, a concurrent change wins and this one stops.
+  const updated = await db
     .update(orders)
     .set({ status: to, ...(to === 'shipped' && !order.shippedAt ? { shippedAt: new Date() } : {}) })
-    .where(eq(orders.id, orderId));
+    .where(and(eq(orders.id, orderId), eq(orders.status, order.status)))
+    .returning({ id: orders.id });
+  if (updated.length === 0) throw new TransitionError('The order changed meanwhile; reload and try again');
   await logEvent(db, orderId, 'status', `${STATUS_LABELS[order.status]} → ${STATUS_LABELS[to]}${options.reason ? ` (${options.reason})` : ''}`, {
     userId: options.userId,
     data: { from: order.status, to },

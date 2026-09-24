@@ -1,7 +1,7 @@
+import { initOpenNextCloudflareForDev } from '@opennextjs/cloudflare';
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['pg-boss', 'pg', 'postgres'],
   experimental: {
     serverActions: {
       bodySizeLimit: '5mb',
@@ -10,3 +10,6 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+
+// Gives `next dev` the D1, Queue and R2 bindings from wrangler.jsonc (local simulations).
+initOpenNextCloudflareForDev();

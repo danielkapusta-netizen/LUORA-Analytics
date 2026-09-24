@@ -2,7 +2,7 @@
   "name": "luora-os",
   "version": "0.1.0",
   "private": true,
-  "description": "Order and shipping hub for Shopify, Allegro and Empik with InPost and Allegro Delivery labels",
+  "description": "Order and shipping hub for Shopify, Allegro and Empik on Cloudflare Workers, D1, Queues and R2",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22.12"
@@ -10,17 +10,18 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "worker": "tsx src/worker/index.ts",
-    "worker:dev": "tsx watch src/worker/index.ts",
+    "preview": "opennextjs-cloudflare build && wrangler dev --test-scheduled",
+    "deploy": "opennextjs-cloudflare build && wrangler deploy",
+    "cf-typegen": "wrangler types",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/server/db/migrate.ts",
-    "db:seed": "tsx src/server/db/seed.ts",
+    "db:migrate:local": "wrangler d1 migrations apply luora --local",
+    "db:migrate:remote": "wrangler d1 migrations apply luora --remote",
+    "db:seed:local": "tsx scripts/seed.ts",
     "integration:check": "tsx scripts/integration-check.ts"
   },
   "pnpm": {
@@ -31,13 +32,12 @@
     ]
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.20.6",
     "clsx": "^2.1.1",
     "drizzle-orm": "0.45.3",
     "lucide-react": "^1.48.0",
     "next": "16.3.6",
     "pdf-lib": "1.17.1",
-    "pg-boss": "12.34.0",
-    "postgres": "3.4.9",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "recharts": "^3.10.1",
@@ -45,6 +45,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260924.1",
     "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.20.4",
@@ -58,6 +59,7 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "typescript": "5.9.3",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "wrangler": "^4.138.0"
   }
 }

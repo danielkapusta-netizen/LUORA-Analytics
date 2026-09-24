@@ -1,5 +1,7 @@
-import { PgBoss } from 'pg-boss';
-import { env } from '../env';
+import { lt, sql } from 'drizzle-orm';
+import { getCfEnv } from '../cf';
+import { getDb } from '../db/client';
+import { jobLocks } from '../db/schema';
 
 export const JOBS = {
   syncAll: 'orders-sync-all',
@@ -31,10 +33,18 @@ export interface JobPayloads {
 
 export type JobName = keyof JobPayloads;
 
+/** Body of a message on the `luora-jobs` Cloudflare Queue. */
+export interface JobMessage {
+  name: JobName;
+  data: unknown;
+  /** Set for singleton jobs; the consumer releases it when the job ends. */
+  lockKey?: string;
+}
+
 export interface EnqueueOptions {
   /** Delay before the job may run. */
   startAfterSeconds?: number;
-  /** Only one queued job per key (e.g. one sync per account). */
+  /** Only one queued or running job per key (e.g. one sync per account). */
   singletonKey?: string;
   /** Collapse bursts: at most one job per key per this many seconds. */
   debounceSeconds?: number;
@@ -42,70 +52,59 @@ export interface EnqueueOptions {
 
 type EnqueueFn = <K extends JobName>(name: K, data: JobPayloads[K], options?: EnqueueOptions) => Promise<void>;
 
-const globalForBoss = globalThis as unknown as { __luoraBoss?: Promise<PgBoss>; __luoraEnqueue?: EnqueueFn };
-
-/** Retry policy per queue. Label purchases never retry automatically: a retry could buy a second label. */
-type QueueConfig = { retryLimit: number; retryDelay?: number; retryBackoff?: boolean; policy?: 'standard' | 'stately' };
-const QUEUE_OPTIONS: Record<JobName, QueueConfig> = {
-  [JOBS.syncAll]: { retryLimit: 0 },
-  // "stately": one queued + one running job per singleton key (account).
-  [JOBS.syncAccount]: { retryLimit: 2, retryDelay: 30, retryBackoff: true, policy: 'stately' },
-  [JOBS.shipmentCreate]: { retryLimit: 0 },
-  [JOBS.shipmentPoll]: { retryLimit: 3, retryDelay: 10, retryBackoff: true },
-  [JOBS.shipmentSweep]: { retryLimit: 0 },
-  [JOBS.trackingPush]: { retryLimit: 5, retryDelay: 60, retryBackoff: true },
-  [JOBS.marketplaceProcessing]: { retryLimit: 3, retryDelay: 60, retryBackoff: true },
-  [JOBS.deliveryCheck]: { retryLimit: 0 },
-  [JOBS.listingsImport]: { retryLimit: 1, retryDelay: 60, policy: 'stately' },
-  [JOBS.stockPush]: { retryLimit: 3, retryDelay: 60, retryBackoff: true },
-  [JOBS.stockReconcile]: { retryLimit: 0 },
+/** Retries per job. Label purchases never retry automatically: a retry could buy a second label. */
+export const RETRY_POLICY: Record<JobName, { retries: number; delaySeconds: number }> = {
+  [JOBS.syncAll]: { retries: 0, delaySeconds: 0 },
+  [JOBS.syncAccount]: { retries: 2, delaySeconds: 30 },
+  [JOBS.shipmentCreate]: { retries: 0, delaySeconds: 0 },
+  [JOBS.shipmentPoll]: { retries: 3, delaySeconds: 10 },
+  [JOBS.shipmentSweep]: { retries: 0, delaySeconds: 0 },
+  [JOBS.trackingPush]: { retries: 5, delaySeconds: 60 },
+  [JOBS.marketplaceProcessing]: { retries: 3, delaySeconds: 60 },
+  [JOBS.deliveryCheck]: { retries: 0, delaySeconds: 0 },
+  [JOBS.listingsImport]: { retries: 1, delaySeconds: 60 },
+  [JOBS.stockPush]: { retries: 3, delaySeconds: 60 },
+  [JOBS.stockReconcile]: { retries: 0, delaySeconds: 0 },
 };
 
-async function createBoss(role: 'web' | 'worker'): Promise<PgBoss> {
-  const boss = new PgBoss({
-    connectionString: env().DATABASE_URL,
-    // Only the worker runs maintenance and cron; the web app just sends jobs.
-    supervise: role === 'worker',
-    schedule: role === 'worker',
-    max: role === 'worker' ? 10 : 3,
-  });
-  boss.on('error', (err) => console.error('[pg-boss]', err));
-  await boss.start();
-  for (const name of Object.values(JOBS)) {
-    const existing = await boss.getQueue(name);
-    if (!existing) await boss.createQueue(name, QUEUE_OPTIONS[name]);
-  }
-  return boss;
+/** A singleton lock is dropped after this long even if its job never reports back. */
+const SINGLETON_TTL_SECONDS = 15 * 60;
+
+const holder = globalThis as unknown as { __luoraEnqueue?: EnqueueFn };
+
+/** Takes the lock unless a live one exists. Returns false when the job should be skipped. */
+async function acquireLock(key: string, seconds: number): Promise<boolean> {
+  const now = Date.now();
+  const rows = await getDb()
+    .insert(jobLocks)
+    .values({ key, until: new Date(now + seconds * 1000) })
+    .onConflictDoUpdate({ target: jobLocks.key, set: { until: new Date(now + seconds * 1000) }, setWhere: lt(jobLocks.until, new Date(now)) })
+    .returning({ key: jobLocks.key });
+  return rows.length > 0;
 }
 
-export function getBoss(role: 'web' | 'worker' = 'web'): Promise<PgBoss> {
-  globalForBoss.__luoraBoss ??= createBoss(role).catch((err) => {
-    globalForBoss.__luoraBoss = undefined;
-    throw err;
-  });
-  return globalForBoss.__luoraBoss;
-}
-
-export async function stopBoss(): Promise<void> {
-  const boss = await globalForBoss.__luoraBoss;
-  globalForBoss.__luoraBoss = undefined;
-  await boss?.stop({ graceful: true });
+export async function releaseLock(key: string): Promise<void> {
+  await getDb().delete(jobLocks).where(sql`${jobLocks.key} = ${key}`);
 }
 
 export const enqueue: EnqueueFn = async (name, data, options = {}) => {
-  if (globalForBoss.__luoraEnqueue) return globalForBoss.__luoraEnqueue(name, data, options);
-  const boss = await getBoss();
+  if (holder.__luoraEnqueue) return holder.__luoraEnqueue(name, data, options);
+  const message: JobMessage = { name, data };
+  let delaySeconds = options.startAfterSeconds;
+
   if (options.debounceSeconds) {
-    await boss.sendDebounced(name, data, null, options.debounceSeconds, options.singletonKey ?? name);
-    return;
+    // The job runs once the window closes and reads the latest state, so later calls in the window can be dropped.
+    if (!(await acquireLock(`debounce:${name}:${options.singletonKey ?? ''}`, options.debounceSeconds))) return;
+    delaySeconds = options.debounceSeconds;
+  } else if (options.singletonKey) {
+    const key = `single:${name}:${options.singletonKey}`;
+    if (!(await acquireLock(key, SINGLETON_TTL_SECONDS))) return;
+    message.lockKey = key;
   }
-  await boss.send(name, data, {
-    startAfter: options.startAfterSeconds,
-    singletonKey: options.singletonKey,
-  });
+  await getCfEnv().JOBS.send(message, delaySeconds ? { delaySeconds: Math.min(Math.ceil(delaySeconds), 43_200) } : undefined);
 };
 
 /** Tests replace the queue with an in-memory recorder. */
 export function setEnqueueImplementation(fn: EnqueueFn | undefined): void {
-  globalForBoss.__luoraEnqueue = fn;
+  holder.__luoraEnqueue = fn;
 }

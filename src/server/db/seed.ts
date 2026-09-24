@@ -5,7 +5,7 @@ import { hashPassword } from '../crypto';
 import { isMockMode } from '../env';
 import { importListings } from '../services/inventory';
 import { createDefaultRules, ensureDefaultPresets } from '../services/settings';
-import { closeDb, getDb } from './client';
+import { getDb } from './client';
 import { carrierAccounts, marketplaceAccounts, shippingRules, users } from './schema';
 
 const DEMO_SENDER = {
@@ -19,10 +19,10 @@ const DEMO_SENDER = {
   email: 'wysylka@example.com',
 };
 
-export async function seed(): Promise<void> {
+export async function seed(admin: { email?: string; password?: string } = {}): Promise<void> {
   const db = getDb();
-  const email = (process.env.ADMIN_EMAIL ?? 'admin@example.com').toLowerCase();
-  const password = process.env.ADMIN_PASSWORD ?? 'change-me-please';
+  const email = (admin.email ?? process.env.ADMIN_EMAIL ?? 'admin@example.com').toLowerCase();
+  const password = admin.password ?? process.env.ADMIN_PASSWORD ?? 'change-me-please';
   const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
   if (!existing) {
     await db.insert(users).values({ email, name: 'Admin', role: 'admin', passwordHash: await hashPassword(password) });
@@ -58,13 +58,4 @@ export async function seed(): Promise<void> {
   // Demo products: every mock listing shares the same SKUs, so they link across marketplaces.
   for (const account of created) await importListings(account.id);
   console.log('Created demo accounts and shipping rules (mock mode)');
-}
-
-if (process.argv[1]?.endsWith('seed.ts')) {
-  seed()
-    .catch((err) => {
-      console.error(err);
-      process.exitCode = 1;
-    })
-    .finally(() => closeDb());
 }

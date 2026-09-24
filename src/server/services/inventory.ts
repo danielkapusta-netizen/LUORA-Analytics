@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { getDb, type Tx } from '../db/client';
+import { getDb, insertMany, insertStatements, type Tx } from '../db/client';
 import {
   marketplaceAccounts,
   orderItems,
@@ -19,47 +19,49 @@ const PUSH_DEBOUNCE_SECONDS = 30;
 
 /** Takes stock for every matched line of an order. Returns true if any stock changed. */
 export async function applyOrderStock(db: Tx, orderId: string): Promise<boolean> {
-  // One row per product, in id order: parallel syncs then lock products in the
-  // same order and can't deadlock each other.
+  // Claim the order first (compare-and-set) so stock is never taken twice.
+  const claimed = await db
+    .update(orders)
+    .set({ stockApplied: true })
+    .where(and(eq(orders.id, orderId), eq(orders.stockApplied, false)))
+    .returning({ id: orders.id });
+  if (claimed.length === 0) return false;
   const lines = await db
-    .select({ productId: orderItems.productId, quantity: sql<number>`sum(${orderItems.quantity})::int` })
+    .select({ productId: orderItems.productId, quantity: sql<number>`sum(${orderItems.quantity})` })
     .from(orderItems)
     .where(and(eq(orderItems.orderId, orderId), isNotNull(orderItems.productId)))
-    .groupBy(orderItems.productId)
-    .orderBy(asc(orderItems.productId));
-  for (const line of lines) {
-    await db
-      .update(products)
-      .set({ stock: sql`${products.stock} - ${line.quantity}` })
-      .where(eq(products.id, line.productId!));
-    await db.insert(stockMovements).values({ productId: line.productId!, delta: -line.quantity, reason: 'order', orderId });
-  }
-  await db.update(orders).set({ stockApplied: true }).where(eq(orders.id, orderId));
-  if (lines.length) await logEvent(db, orderId, 'stock', `Stock taken for ${lines.length} product(s)`);
-  return lines.length > 0;
+    .groupBy(orderItems.productId);
+  if (lines.length === 0) return false;
+  await db.batch([
+    ...lines.map((l) => db.update(products).set({ stock: sql`${products.stock} - ${l.quantity}` }).where(eq(products.id, l.productId!))),
+    ...insertStatements(db, stockMovements, lines.map((l) => ({ productId: l.productId!, delta: -l.quantity, reason: 'order', orderId }))),
+  ] as unknown as Parameters<Tx['batch']>[0]);
+  await logEvent(db, orderId, 'stock', `Stock taken for ${lines.length} product(s)`);
+  return true;
 }
 
 /** Returns the stock an order took (on cancellation). Returns true if any stock changed. */
 export async function restockOrder(db: Tx, orderId: string): Promise<boolean> {
-  const taken = await db
-    .select({ productId: stockMovements.productId, delta: sql<number>`sum(${stockMovements.delta})::int` })
-    .from(stockMovements)
-    .where(eq(stockMovements.orderId, orderId))
-    .groupBy(stockMovements.productId)
-    .orderBy(asc(stockMovements.productId));
-  let changed = false;
-  for (const row of taken) {
-    if (row.delta === 0) continue;
+  const claimed = await db
+    .update(orders)
+    .set({ stockApplied: false })
+    .where(and(eq(orders.id, orderId), eq(orders.stockApplied, true)))
+    .returning({ id: orders.id });
+  if (claimed.length === 0) return false;
+  const taken = (
     await db
-      .update(products)
-      .set({ stock: sql`${products.stock} - ${row.delta}` })
-      .where(eq(products.id, row.productId));
-    await db.insert(stockMovements).values({ productId: row.productId, delta: -row.delta, reason: 'cancel', orderId });
-    changed = true;
-  }
-  await db.update(orders).set({ stockApplied: false }).where(eq(orders.id, orderId));
-  if (changed) await logEvent(db, orderId, 'stock', 'Stock returned');
-  return changed;
+      .select({ productId: stockMovements.productId, delta: sql<number>`sum(${stockMovements.delta})` })
+      .from(stockMovements)
+      .where(eq(stockMovements.orderId, orderId))
+      .groupBy(stockMovements.productId)
+  ).filter((r) => r.delta !== 0);
+  if (taken.length === 0) return false;
+  await db.batch([
+    ...taken.map((r) => db.update(products).set({ stock: sql`${products.stock} - ${r.delta}` }).where(eq(products.id, r.productId))),
+    ...insertStatements(db, stockMovements, taken.map((r) => ({ productId: r.productId, delta: -r.delta, reason: 'cancel', orderId }))),
+  ] as unknown as Parameters<Tx['batch']>[0]);
+  await logEvent(db, orderId, 'stock', 'Stock returned');
+  return true;
 }
 
 export async function adjustStock(input: {
@@ -69,20 +71,16 @@ export async function adjustStock(input: {
   userId: string;
   note?: string;
 }): Promise<void> {
-  await getDb().transaction(async (tx) => {
-    const [product] = await tx.select().from(products).where(eq(products.id, input.productId)).for('update');
-    if (!product) throw new Error('Product not found');
-    const delta = input.mode === 'set' ? input.value - product.stock : input.value;
-    if (delta === 0) return;
-    await tx.update(products).set({ stock: product.stock + delta }).where(eq(products.id, product.id));
-    await tx.insert(stockMovements).values({
-      productId: product.id,
-      delta,
-      reason: 'manual',
-      userId: input.userId,
-      note: input.note || null,
-    });
-  });
+  const db = getDb();
+  const [product] = await db.select().from(products).where(eq(products.id, input.productId));
+  if (!product) throw new Error('Product not found');
+  const delta = input.mode === 'set' ? input.value - product.stock : input.value;
+  if (delta === 0) return;
+  // Relative update, so an order arriving meanwhile isn't overwritten.
+  await db.batch([
+    db.update(products).set({ stock: sql`${products.stock} + ${delta}` }).where(eq(products.id, product.id)),
+    db.insert(stockMovements).values({ productId: product.id, delta, reason: 'manual', userId: input.userId, note: input.note || null }),
+  ]);
   await scheduleStockPush();
 }
 
@@ -111,7 +109,8 @@ export async function importListings(accountId: string): Promise<{ listings: num
 
   for await (const listing of adapter.listListings()) {
     count++;
-    await db.transaction(async (tx) => {
+    {
+      const tx = db;
       let productId: string | null = null;
       if (listing.sku) {
         const [product] = await tx.select({ id: products.id }).from(products).where(eq(products.sku, listing.sku));
@@ -151,14 +150,13 @@ export async function importListings(accountId: string): Promise<{ listings: num
             productId: sql`coalesce(${productListings.productId}, ${productId})`,
           },
         });
-    });
+    }
   }
 
   // Link order lines that arrived before their product existed.
-  await db.execute(sql`
-    update order_items oi set product_id = p.id
-    from products p
-    where oi.product_id is null and oi.sku is not null and oi.sku = p.sku`);
+  await db.run(sql`
+    update order_items set product_id = (select p.id from products p where p.sku = order_items.sku)
+    where product_id is null and sku is not null and exists (select 1 from products p where p.sku = order_items.sku)`);
   return { listings: count, created, unmatched };
 }
 
@@ -200,13 +198,14 @@ export async function runStockPush(accountId: string): Promise<{ pushed: number;
 
   if (account.stockDryRun) {
     // Nothing is sent, so the same difference would be logged on every push; only log changes.
-    const lastLogged = await db.execute<{ listing_id: string; quantity: number }>(sql`
-      select distinct on (listing_id) listing_id, quantity from stock_sync_log
-      where account_id = ${accountId} and dry_run order by listing_id, created_at desc`);
-    const previous = new Map([...lastLogged].map((r) => [r.listing_id, r.quantity]));
+    const lastLogged = await db.all<{ listing_id: string; quantity: number }>(sql`
+      select l.listing_id, l.quantity from stock_sync_log l
+      where l.account_id = ${accountId} and l.dry_run = 1
+        and l.created_at = (select max(x.created_at) from stock_sync_log x where x.listing_id = l.listing_id and x.dry_run = 1)`);
+    const previous = new Map(lastLogged.map((r) => [r.listing_id, r.quantity]));
     const fresh = updates.filter((u) => previous.get(u.listingId) !== u.quantity);
     if (fresh.length) {
-      await db.insert(stockSyncLog).values(fresh.map((u) => ({ accountId, listingId: u.listingId, quantity: u.quantity, dryRun: true, ok: true })));
+      await insertMany(db, stockSyncLog, fresh.map((u) => ({ accountId, listingId: u.listingId, quantity: u.quantity, dryRun: true, ok: true })));
     }
     return { pushed: fresh.length, dryRun: true };
   }
@@ -219,7 +218,9 @@ export async function runStockPush(accountId: string): Promise<{ pushed: number;
       .update(productListings)
       .set({ lastPushError: message })
       .where(inArray(productListings.id, updates.map((u) => u.listingId)));
-    await db.insert(stockSyncLog).values(
+    await insertMany(
+      db,
+      stockSyncLog,
       updates.map((u) => ({ accountId, listingId: u.listingId, quantity: u.quantity, dryRun: false, ok: false, error: message })),
     );
     throw err;
@@ -232,7 +233,9 @@ export async function runStockPush(accountId: string): Promise<{ pushed: number;
       .set({ lastPushedQty: u.quantity, lastPushedAt: now, lastPushError: null })
       .where(eq(productListings.id, u.listingId));
   }
-  await db.insert(stockSyncLog).values(
+  await insertMany(
+    db,
+    stockSyncLog,
     updates.map((u) => ({ accountId, listingId: u.listingId, quantity: u.quantity, dryRun: false, ok: true })),
   );
   return { pushed: updates.length, dryRun: false };

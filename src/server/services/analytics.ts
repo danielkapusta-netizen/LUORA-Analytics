@@ -8,63 +8,74 @@ export interface AnalyticsFilters {
 }
 
 function orderScope(f: AnalyticsFilters) {
-  return sql`o.placed_at >= ${f.from.toISOString()} and o.placed_at < ${f.to.toISOString()}
+  return sql`o.placed_at >= ${f.from.getTime()} and o.placed_at < ${f.to.getTime()}
     ${f.marketplace ? sql`and o.marketplace = ${f.marketplace}` : sql``}`;
 }
+
+/** Offset of Europe/Warsaw from UTC in ms at a given moment (CET/CEST). */
+export function warsawOffsetMs(at: Date): number {
+  const local = new Date(at.toLocaleString('en-US', { timeZone: 'Europe/Warsaw' }));
+  const utc = new Date(at.toLocaleString('en-US', { timeZone: 'UTC' }));
+  return local.getTime() - utc.getTime();
+}
+
+// Amounts are stored as decimal text; cast for arithmetic. Timestamps are ms integers.
+const amount = sql.raw('cast(o.total_amount as real)');
 
 export async function analytics(f: AnalyticsFilters) {
   const db = getDb();
   const scope = orderScope(f);
+  const offset = warsawOffsetMs(f.to);
 
-  const [kpis] = await db.execute<{
+  const [kpis] = await db.all<{
     orders: number;
     cancelled: number;
-    revenue: string | null;
-    aov: string | null;
+    revenue: number | null;
+    aov: number | null;
     shipped: number;
-    avg_hours_to_ship: string | null;
-    currencies: string[] | null;
+    avg_hours_to_ship: number | null;
+    currencies: string | null;
   }>(sql`
     select
-      count(*) filter (where o.status <> 'cancelled')::int as orders,
-      count(*) filter (where o.status = 'cancelled')::int as cancelled,
-      sum(o.total_amount) filter (where o.status <> 'cancelled') as revenue,
-      avg(o.total_amount) filter (where o.status <> 'cancelled') as aov,
-      count(*) filter (where o.status in ('shipped', 'delivered'))::int as shipped,
-      avg(extract(epoch from (o.shipped_at - o.placed_at)) / 3600) filter (where o.shipped_at is not null) as avg_hours_to_ship,
-      array_agg(distinct o.currency) as currencies
+      sum(case when o.status <> 'cancelled' then 1 else 0 end) as orders,
+      sum(case when o.status = 'cancelled' then 1 else 0 end) as cancelled,
+      sum(case when o.status <> 'cancelled' then ${amount} end) as revenue,
+      avg(case when o.status <> 'cancelled' then ${amount} end) as aov,
+      sum(case when o.status in ('shipped', 'delivered') then 1 else 0 end) as shipped,
+      avg(case when o.shipped_at is not null then (o.shipped_at - o.placed_at) / 3600000.0 end) as avg_hours_to_ship,
+      group_concat(distinct o.currency) as currencies
     from orders o where ${scope}`);
 
-  const daily = await db.execute<{ day: string; marketplace: string; orders: number; revenue: string }>(sql`
-    select to_char(date_trunc('day', o.placed_at at time zone 'Europe/Warsaw'), 'YYYY-MM-DD') as day,
-           o.marketplace, count(*)::int as orders, sum(o.total_amount) as revenue
+  const daily = await db.all<{ day: string; marketplace: string; orders: number; revenue: number }>(sql`
+    select strftime('%Y-%m-%d', (o.placed_at + ${offset}) / 1000, 'unixepoch') as day,
+           o.marketplace, count(*) as orders, sum(${amount}) as revenue
     from orders o where ${scope} and o.status <> 'cancelled'
     group by 1, 2 order by 1`);
 
-  const byMarketplace = await db.execute<{ marketplace: string; orders: number; revenue: string; aov: string }>(sql`
-    select o.marketplace, count(*)::int as orders, sum(o.total_amount) as revenue, avg(o.total_amount) as aov
+  const byMarketplace = await db.all<{ marketplace: string; orders: number; revenue: number; aov: number }>(sql`
+    select o.marketplace, count(*) as orders, sum(${amount}) as revenue, avg(${amount}) as aov
     from orders o where ${scope} and o.status <> 'cancelled'
     group by 1 order by revenue desc`);
 
-  const topSkus = await db.execute<{ sku: string | null; name: string; quantity: number; revenue: string }>(sql`
-    select i.sku, min(i.name) as name, sum(i.quantity)::int as quantity, sum(i.quantity * i.unit_price) as revenue
+  const topSkus = await db.all<{ sku: string | null; name: string; quantity: number; revenue: number }>(sql`
+    select i.sku, min(i.name) as name, sum(i.quantity) as quantity, sum(i.quantity * cast(i.unit_price as real)) as revenue
     from order_items i join orders o on o.id = i.order_id
     where ${scope} and o.status <> 'cancelled'
     group by i.sku order by quantity desc limit 10`);
 
-  const carriers = await db.execute<{ carrier: string; service: string; shipments: number }>(sql`
-    select s.carrier, s.service, count(*)::int as shipments
+  const carriers = await db.all<{ carrier: string; service: string; shipments: number }>(sql`
+    select s.carrier, s.service, count(*) as shipments
     from shipments s join orders o on o.id = s.order_id
     where ${scope} and s.state = 'created'
     group by 1, 2 order by shipments desc`);
 
-  const shipTime = await db.execute<{ marketplace: string; avg_hours: string; shipped: number }>(sql`
-    select o.marketplace, avg(extract(epoch from (o.shipped_at - o.placed_at)) / 3600) as avg_hours, count(*)::int as shipped
+  const shipTime = await db.all<{ marketplace: string; avg_hours: number; shipped: number }>(sql`
+    select o.marketplace, avg((o.shipped_at - o.placed_at) / 3600000.0) as avg_hours, count(*) as shipped
     from orders o where ${scope} and o.shipped_at is not null
     group by 1 order by 1`);
 
-  const backlog = await db.execute<{ status: string; orders: number; oldest: string | null }>(sql`
-    select o.status, count(*)::int as orders, min(o.placed_at)::text as oldest
+  const backlog = await db.all<{ status: string; orders: number; oldest: number | null }>(sql`
+    select o.status, count(*) as orders, min(o.placed_at) as oldest
     from orders o
     where o.status in ('new', 'processing', 'label_created', 'on_hold')
       ${f.marketplace ? sql`and o.marketplace = ${f.marketplace}` : sql``}
@@ -78,14 +89,14 @@ export async function analytics(f: AnalyticsFilters) {
       aov: Number(kpis?.aov ?? 0),
       shipped: kpis?.shipped ?? 0,
       avgHoursToShip: kpis?.avg_hours_to_ship != null ? Number(kpis.avg_hours_to_ship) : null,
-      currencies: (kpis?.currencies ?? []).filter(Boolean),
+      currencies: (kpis?.currencies ?? '').split(',').filter(Boolean),
     },
     daily: [...daily].map((r) => ({ ...r, revenue: Number(r.revenue) })),
     byMarketplace: [...byMarketplace].map((r) => ({ ...r, revenue: Number(r.revenue), aov: Number(r.aov) })),
     topSkus: [...topSkus].map((r) => ({ ...r, revenue: Number(r.revenue) })),
     carriers: [...carriers],
     shipTime: [...shipTime].map((r) => ({ ...r, avgHours: Number(r.avg_hours) })),
-    backlog: [...backlog],
+    backlog: backlog.map((b) => ({ ...b, oldest: b.oldest !== null ? new Date(b.oldest).toISOString() : null })),
   };
 }
 

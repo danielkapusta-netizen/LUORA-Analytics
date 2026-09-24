@@ -1,5 +1,5 @@
-import { and, asc, desc, eq, gte, ilike, inArray, lte, ne, or, sql, type SQL } from 'drizzle-orm';
-import { getDb, type Tx } from '../db/client';
+import { and, asc, desc, eq, gte, inArray, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { getDb, insertStatements, type Tx } from '../db/client';
 import {
   marketplaceAccounts,
   orderEvents,
@@ -80,17 +80,18 @@ export async function upsertOrders(
   let stockChanged = false;
 
   for (const n of incoming) {
-    await db.transaction(async (tx) => {
+    await (async () => {
+      const tx = db;
       const [existing] = await tx
         .select()
         .from(orders)
-        .where(and(eq(orders.accountId, account.id), eq(orders.externalId, n.externalId)))
-        .for('update');
+        .where(and(eq(orders.accountId, account.id), eq(orders.externalId, n.externalId)));
 
       if (!existing) {
-        const [created] = await tx
-          .insert(orders)
-          .values({
+        // Order, items and the import event land together in one D1 batch (atomic).
+        const id = crypto.randomUUID();
+        const insertOrder = tx.insert(orders).values({
+            id,
             accountId: account.id,
             marketplace: account.type,
             externalId: n.externalId,
@@ -112,12 +113,14 @@ export async function upsertOrders(
             shippedAt: n.fulfilled ? new Date() : null,
             revision: n.revision ?? null,
             raw: n.raw as object,
-          })
-          .returning({ id: orders.id });
-        await insertItems(tx, created.id, n);
-        await logEvent(tx, created.id, 'sync', `Imported from ${account.name}`);
-        if (!n.cancelled && !n.fulfilled) stockChanged = (await applyOrderStock(tx, created.id)) || stockChanged;
-        newOrderIds.push(created.id);
+          });
+        await tx.batch([
+          insertOrder,
+          ...(await itemStatements(tx, id, n)),
+          tx.insert(orderEvents).values({ orderId: id, type: 'sync', message: `Imported from ${account.name}` }),
+        ] as unknown as Parameters<Tx['batch']>[0]);
+        if (!n.cancelled && !n.fulfilled) stockChanged = (await applyOrderStock(tx, id)) || stockChanged;
+        newOrderIds.push(id);
         return;
       }
 
@@ -153,21 +156,23 @@ export async function upsertOrders(
       } else if (n.fulfilled && ['new', 'processing', 'label_created', 'on_hold'].includes(existing.status)) {
         await changeStatus(tx, existing.id, 'shipped', { reason: 'shipped on the marketplace', force: true });
       }
-    });
+    })();
   }
 
   if (stockChanged) await scheduleStockPush();
   return { created: newOrderIds.length, updated, newOrderIds };
 }
 
-async function insertItems(tx: Tx, orderId: string, n: NormalizedOrder): Promise<void> {
-  if (n.items.length === 0) return;
+async function itemStatements(tx: Tx, orderId: string, n: NormalizedOrder) {
+  if (n.items.length === 0) return [];
   const skus = [...new Set(n.items.map((i) => i.sku).filter((s): s is string => Boolean(s)))];
   const known = skus.length
     ? await tx.select({ id: products.id, sku: products.sku }).from(products).where(inArray(products.sku, skus))
     : [];
   const bySku = new Map(known.map((p) => [p.sku, p.id]));
-  await tx.insert(orderItems).values(
+  return insertStatements(
+    tx,
+    orderItems,
     n.items.map((i) => ({
       orderId,
       externalLineId: i.externalLineId,
@@ -262,7 +267,7 @@ function filterConditions(f: OrderFilters): SQL[] {
   if (f.marketplace) where.push(sql`${orders.marketplace} = ${f.marketplace}`);
   if (f.accountId) where.push(eq(orders.accountId, f.accountId));
   if (f.assigneeId) where.push(eq(orders.assigneeId, f.assigneeId));
-  if (f.tag) where.push(sql`${f.tag} = any(${orders.tags})`);
+  if (f.tag) where.push(sql`exists (select 1 from json_each(${orders.tags}) t where t.value = ${f.tag})`);
   if (f.from) where.push(gte(orders.placedAt, new Date(f.from)));
   if (f.to) where.push(lte(orders.placedAt, new Date(`${f.to}T23:59:59`)));
   if (f.carrier) {
@@ -271,15 +276,16 @@ function filterConditions(f: OrderFilters): SQL[] {
     );
   }
   if (f.q) {
-    const like = `%${f.q.trim()}%`;
+    const pattern = `%${f.q.trim()}%`;
     where.push(
       or(
-        ilike(orders.externalNumber, like),
-        ilike(orders.externalId, like),
-        sql`${orders.buyer}->>'name' ilike ${like}`,
-        sql`${orders.buyer}->>'email' ilike ${like}`,
-        sql`exists (select 1 from ${shipments} s where s.order_id = ${orders.id} and s.tracking_number ilike ${like})`,
-        sql`exists (select 1 from ${orderItems} i where i.order_id = ${orders.id} and (i.sku ilike ${like} or i.name ilike ${like}))`,
+        // SQLite LIKE is case-insensitive for ASCII.
+        like(orders.externalNumber, pattern),
+        like(orders.externalId, pattern),
+        sql`json_extract(${orders.buyer}, '$.name') like ${pattern}`,
+        sql`json_extract(${orders.buyer}, '$.email') like ${pattern}`,
+        sql`exists (select 1 from ${shipments} s where s.order_id = ${orders.id} and s.tracking_number like ${pattern})`,
+        sql`exists (select 1 from ${orderItems} i where i.order_id = ${orders.id} and (i.sku like ${pattern} or i.name like ${pattern}))`,
       )!,
     );
   }
@@ -296,7 +302,7 @@ export async function listOrders(f: OrderFilters) {
       order: orders,
       accountName: marketplaceAccounts.name,
       assigneeName: users.name,
-      itemCount: sql<number>`(select coalesce(sum(quantity), 0)::int from ${orderItems} i where i.order_id = ${orders.id})`,
+      itemCount: sql<number>`(select coalesce(sum(quantity), 0) from ${orderItems} i where i.order_id = ${orders.id})`,
     })
     .from(orders)
     .innerJoin(marketplaceAccounts, eq(marketplaceAccounts.id, orders.accountId))
@@ -306,7 +312,7 @@ export async function listOrders(f: OrderFilters) {
     .limit(PAGE_SIZE)
     .offset((page - 1) * PAGE_SIZE);
 
-  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(orders).where(where);
+  const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(orders).where(where);
 
   const ids = rows.map((r) => r.order.id);
   const live = ids.length
@@ -324,7 +330,7 @@ export async function listOrders(f: OrderFilters) {
 
 export async function statusCounts(): Promise<Record<string, number>> {
   const rows = await getDb()
-    .select({ status: orders.status, count: sql<number>`count(*)::int` })
+    .select({ status: orders.status, count: sql<number>`count(*)` })
     .from(orders)
     .groupBy(orders.status);
   return Object.fromEntries(rows.map((r) => [r.status, r.count]));
@@ -388,6 +394,6 @@ export async function updateShippingDetails(
 }
 
 export async function listTags(): Promise<string[]> {
-  const rows = await getDb().execute<{ tag: string }>(sql`select distinct unnest(tags) as tag from orders order by 1`);
+  const rows = await getDb().all<{ tag: string }>(sql`select distinct t.value as tag from orders, json_each(orders.tags) t order by 1`);
   return rows.map((r) => r.tag);
 }

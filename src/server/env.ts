@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 const schema = z.object({
-  DATABASE_URL: z.string().min(1).default('postgres://luora:luora@localhost:5432/luora'),
   ENCRYPTION_KEY: z.string().optional(),
   APP_URL: z.string().url().default('http://localhost:3000'),
   INTEGRATIONS_MODE: z.enum(['live', 'mock']).default('live'),
@@ -11,11 +10,9 @@ const schema = z.object({
 
 export type Env = z.infer<typeof schema>;
 
-let cached: Env | undefined;
-
+// Wrangler `vars` and secrets are copied into process.env by the nodejs_compat flag.
 export function env(): Env {
-  cached ??= schema.parse(process.env);
-  return cached;
+  return schema.parse(process.env);
 }
 
 export function isMockMode(): boolean {

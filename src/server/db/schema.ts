@@ -1,37 +1,23 @@
 import { sql } from 'drizzle-orm';
-import {
-  boolean,
-  customType,
-  index,
-  integer,
-  jsonb,
-  numeric,
-  pgEnum,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-  uuid,
-} from 'drizzle-orm/pg-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type { Address, Buyer, ParcelSpec, SenderSettings } from '../integrations/types';
 
-const bytea = customType<{ data: Buffer; driverData: Buffer }>({
-  dataType() {
-    return 'bytea';
-  },
-});
-
-const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
+// SQLite on D1: ids are UUID text, timestamps are integer milliseconds, JSON is text.
+const id = () => text('id').primaryKey().$defaultFn(() => crypto.randomUUID());
+const ts = (name: string) => integer(name, { mode: 'timestamp_ms' });
+const bool = (name: string) => integer(name, { mode: 'boolean' });
+const json = <T>(name: string) => text(name, { mode: 'json' }).$type<T>();
+const createdAt = () => ts('created_at').notNull().$defaultFn(() => new Date());
 const updatedAt = () =>
-  timestamp('updated_at', { withTimezone: true })
+  ts('updated_at')
     .notNull()
-    .defaultNow()
+    .$defaultFn(() => new Date())
     .$onUpdate(() => new Date());
 
-export const userRole = pgEnum('user_role', ['admin', 'staff']);
-export const marketplaceType = pgEnum('marketplace_type', ['shopify', 'allegro', 'empik']);
-export const carrierType = pgEnum('carrier_type', ['inpost', 'allegro_shipping']);
-export const orderStatus = pgEnum('order_status', [
+export const userRoleValues = ['admin', 'staff'] as const;
+export const marketplaceTypeValues = ['shopify', 'allegro', 'empik'] as const;
+export const carrierTypeValues = ['inpost', 'allegro_shipping'] as const;
+export const orderStatusValues = [
   'new',
   'processing',
   'label_created',
@@ -39,29 +25,29 @@ export const orderStatus = pgEnum('order_status', [
   'delivered',
   'on_hold',
   'cancelled',
-]);
-export const shipmentState = pgEnum('shipment_state', ['pending', 'created', 'failed', 'cancelled']);
-export const labelFormat = pgEnum('label_format', ['pdf', 'zpl']);
-export const labelSize = pgEnum('label_size', ['A4', 'A6']);
+] as const;
+export const shipmentStateValues = ['pending', 'created', 'failed', 'cancelled'] as const;
+export const labelFormatValues = ['pdf', 'zpl'] as const;
+export const labelSizeValues = ['A4', 'A6'] as const;
 
 // ---------------------------------------------------------------- users
 
-export const users = pgTable('users', {
-  id: uuid('id').primaryKey().defaultRandom(),
+export const users = sqliteTable('users', {
+  id: id(),
   email: text('email').notNull().unique(),
   name: text('name').notNull(),
   passwordHash: text('password_hash').notNull(),
-  role: userRole('role').notNull().default('staff'),
+  role: text('role', { enum: userRoleValues }).notNull().default('staff'),
   createdAt: createdAt(),
 });
 
-export const sessions = pgTable('sessions', {
+export const sessions = sqliteTable('sessions', {
   /** SHA-256 of the session token; the raw token only lives in the cookie. */
   id: text('id').primaryKey(),
-  userId: uuid('user_id')
+  userId: text('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  expiresAt: ts('expires_at').notNull(),
   createdAt: createdAt(),
 });
 
@@ -84,20 +70,20 @@ export interface MarketplaceSettings {
   carrierCodes?: Record<string, string>;
 }
 
-export const marketplaceAccounts = pgTable('marketplace_accounts', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  type: marketplaceType('type').notNull(),
+export const marketplaceAccounts = sqliteTable('marketplace_accounts', {
+  id: id(),
+  type: text('type', { enum: marketplaceTypeValues }).notNull(),
   name: text('name').notNull(),
   /** AES-256-GCM encrypted JSON; see src/server/crypto.ts. */
   credentials: text('credentials'),
-  settings: jsonb('settings').$type<MarketplaceSettings>().notNull().default({}),
-  enabled: boolean('enabled').notNull().default(true),
+  settings: json<MarketplaceSettings>('settings').notNull().$defaultFn(() => ({})),
+  enabled: bool('enabled').notNull().default(true),
   syncCursor: text('sync_cursor'),
-  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+  lastSyncedAt: ts('last_synced_at'),
   lastError: text('last_error'),
-  stockSyncEnabled: boolean('stock_sync_enabled').notNull().default(false),
+  stockSyncEnabled: bool('stock_sync_enabled').notNull().default(false),
   /** When true, stock pushes are only logged, never sent. */
-  stockDryRun: boolean('stock_dry_run').notNull().default(true),
+  stockDryRun: bool('stock_dry_run').notNull().default(true),
   createdAt: createdAt(),
 });
 
@@ -111,54 +97,54 @@ export interface CarrierSettings {
   codOwnerName?: string;
 }
 
-export const carrierAccounts = pgTable('carrier_accounts', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  type: carrierType('type').notNull(),
+export const carrierAccounts = sqliteTable('carrier_accounts', {
+  id: id(),
+  type: text('type', { enum: carrierTypeValues }).notNull(),
   name: text('name').notNull(),
   credentials: text('credentials'),
   /** Allegro Delivery reuses the OAuth tokens of an Allegro marketplace account. */
-  marketplaceAccountId: uuid('marketplace_account_id').references(() => marketplaceAccounts.id, {
+  marketplaceAccountId: text('marketplace_account_id').references(() => marketplaceAccounts.id, {
     onDelete: 'set null',
   }),
-  sender: jsonb('sender').$type<SenderSettings>(),
-  settings: jsonb('settings').$type<CarrierSettings>().notNull().default({}),
-  enabled: boolean('enabled').notNull().default(true),
+  sender: json<SenderSettings>('sender'),
+  settings: json<CarrierSettings>('settings').notNull().$defaultFn(() => ({})),
+  enabled: bool('enabled').notNull().default(true),
   createdAt: createdAt(),
 });
 
 // ---------------------------------------------------------------- orders
 
-export const orders = pgTable(
+export const orders = sqliteTable(
   'orders',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    accountId: uuid('account_id')
+    id: id(),
+    accountId: text('account_id')
       .notNull()
       .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
-    marketplace: marketplaceType('marketplace').notNull(),
+    marketplace: text('marketplace', { enum: marketplaceTypeValues }).notNull(),
     externalId: text('external_id').notNull(),
     externalNumber: text('external_number').notNull(),
     marketplaceStatus: text('marketplace_status').notNull(),
-    readyToShip: boolean('ready_to_ship').notNull().default(true),
-    status: orderStatus('status').notNull().default('new'),
-    buyer: jsonb('buyer').$type<Buyer>().notNull(),
-    shippingAddress: jsonb('shipping_address').$type<Address>().notNull(),
+    readyToShip: bool('ready_to_ship').notNull().default(true),
+    status: text('status', { enum: orderStatusValues }).notNull().default('new'),
+    buyer: json<Buyer>('buyer').notNull(),
+    shippingAddress: json<Address>('shipping_address').notNull(),
     deliveryMethodId: text('delivery_method_id'),
     deliveryMethodName: text('delivery_method_name'),
     pickupPointId: text('pickup_point_id'),
-    codAmount: numeric('cod_amount', { precision: 12, scale: 2 }),
-    totalAmount: numeric('total_amount', { precision: 12, scale: 2 }).notNull(),
-    shippingAmount: numeric('shipping_amount', { precision: 12, scale: 2 }),
+    codAmount: text('cod_amount'),
+    totalAmount: text('total_amount').notNull(),
+    shippingAmount: text('shipping_amount'),
     currency: text('currency').notNull(),
-    placedAt: timestamp('placed_at', { withTimezone: true }).notNull(),
-    paidAt: timestamp('paid_at', { withTimezone: true }),
-    shippedAt: timestamp('shipped_at', { withTimezone: true }),
-    assigneeId: uuid('assignee_id').references(() => users.id, { onDelete: 'set null' }),
-    tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+    placedAt: ts('placed_at').notNull(),
+    paidAt: ts('paid_at'),
+    shippedAt: ts('shipped_at'),
+    assigneeId: text('assignee_id').references(() => users.id, { onDelete: 'set null' }),
+    tags: json<string[]>('tags').notNull().$defaultFn(() => []),
     revision: text('revision'),
     /** Stock was decremented for this order (and must be returned if it is cancelled). */
-    stockApplied: boolean('stock_applied').notNull().default(false),
-    raw: jsonb('raw'),
+    stockApplied: bool('stock_applied').notNull().default(false),
+    raw: json<unknown>('raw'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -169,36 +155,36 @@ export const orders = pgTable(
   ],
 );
 
-export const orderItems = pgTable(
+export const orderItems = sqliteTable(
   'order_items',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    orderId: uuid('order_id')
+    id: id(),
+    orderId: text('order_id')
       .notNull()
       .references(() => orders.id, { onDelete: 'cascade' }),
     externalLineId: text('external_line_id').notNull(),
     sku: text('sku'),
     name: text('name').notNull(),
     quantity: integer('quantity').notNull(),
-    unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+    unitPrice: text('unit_price').notNull(),
     externalProductId: text('external_product_id'),
-    productId: uuid('product_id').references(() => products.id, { onDelete: 'set null' }),
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
   },
   (t) => [index('order_items_order_idx').on(t.orderId), index('order_items_sku_idx').on(t.sku)],
 );
 
-export const orderEvents = pgTable(
+export const orderEvents = sqliteTable(
   'order_events',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    orderId: uuid('order_id')
+    id: id(),
+    orderId: text('order_id')
       .notNull()
       .references(() => orders.id, { onDelete: 'cascade' }),
     /** status | note | sync | label | tracking | stock | error */
     type: text('type').notNull(),
     message: text('message').notNull(),
-    data: jsonb('data'),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    data: json<unknown>('data'),
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
   },
   (t) => [index('order_events_order_idx').on(t.orderId, t.createdAt)],
@@ -206,15 +192,15 @@ export const orderEvents = pgTable(
 
 // ---------------------------------------------------------------- shipping
 
-export const packagePresets = pgTable('package_presets', {
-  id: uuid('id').primaryKey().defaultRandom(),
+export const packagePresets = sqliteTable('package_presets', {
+  id: id(),
   name: text('name').notNull(),
   lengthCm: integer('length_cm').notNull(),
   widthCm: integer('width_cm').notNull(),
   heightCm: integer('height_cm').notNull(),
-  weightKg: numeric('weight_kg', { precision: 6, scale: 2 }).notNull(),
+  weightKg: text('weight_kg').notNull(),
   inpostTemplate: text('inpost_template'),
-  isDefault: boolean('is_default').notNull().default(false),
+  isDefault: bool('is_default').notNull().default(false),
   createdAt: createdAt(),
 });
 
@@ -226,27 +212,27 @@ export interface RuleConditions {
   cod?: boolean;
 }
 
-export const shippingRules = pgTable('shipping_rules', {
-  id: uuid('id').primaryKey().defaultRandom(),
+export const shippingRules = sqliteTable('shipping_rules', {
+  id: id(),
   name: text('name').notNull(),
   /** Lower number wins. */
   priority: integer('priority').notNull().default(100),
-  enabled: boolean('enabled').notNull().default(true),
-  conditions: jsonb('conditions').$type<RuleConditions>().notNull().default({}),
-  carrierAccountId: uuid('carrier_account_id')
+  enabled: bool('enabled').notNull().default(true),
+  conditions: json<RuleConditions>('conditions').notNull().$defaultFn(() => ({})),
+  carrierAccountId: text('carrier_account_id')
     .notNull()
     .references(() => carrierAccounts.id, { onDelete: 'cascade' }),
   service: text('service').notNull(),
-  packagePresetId: uuid('package_preset_id').references(() => packagePresets.id, { onDelete: 'set null' }),
+  packagePresetId: text('package_preset_id').references(() => packagePresets.id, { onDelete: 'set null' }),
   createdAt: createdAt(),
 });
 
-export const shipmentBatches = pgTable('shipment_batches', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+export const shipmentBatches = sqliteTable('shipment_batches', {
+  id: id(),
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
   total: integer('total').notNull(),
   /** Orders that could not be queued, with the reason. */
-  skipped: jsonb('skipped').$type<{ orderId: string; reason: string }[]>().notNull().default([]),
+  skipped: json<{ orderId: string; reason: string }[]>('skipped').notNull().$defaultFn(() => []),
   createdAt: createdAt(),
 });
 
@@ -257,19 +243,19 @@ export interface ShipmentOptions {
   reference?: string | null;
 }
 
-export const shipments = pgTable(
+export const shipments = sqliteTable(
   'shipments',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    orderId: uuid('order_id')
+    id: id(),
+    orderId: text('order_id')
       .notNull()
       .references(() => orders.id, { onDelete: 'cascade' }),
-    carrierAccountId: uuid('carrier_account_id')
+    carrierAccountId: text('carrier_account_id')
       .notNull()
       .references(() => carrierAccounts.id),
-    carrier: carrierType('carrier').notNull(),
+    carrier: text('carrier', { enum: carrierTypeValues }).notNull(),
     service: text('service').notNull(),
-    state: shipmentState('state').notNull().default('pending'),
+    state: text('state', { enum: shipmentStateValues }).notNull().default('pending'),
     /** Carrier's shipment id (InPost shipment id, Allegro shipmentId). */
     externalId: text('external_id'),
     /** Allegro create-command id, kept so a retry polls instead of creating twice. */
@@ -277,18 +263,18 @@ export const shipments = pgTable(
     carrierCode: text('carrier_code'),
     trackingNumber: text('tracking_number'),
     trackingUrl: text('tracking_url'),
-    parcel: jsonb('parcel').$type<ParcelSpec>().notNull(),
-    options: jsonb('options').$type<ShipmentOptions>().notNull().default({}),
-    labelFormat: labelFormat('label_format').notNull().default('pdf'),
-    labelSize: labelSize('label_size').notNull().default('A6'),
+    parcel: json<ParcelSpec>('parcel').notNull(),
+    options: json<ShipmentOptions>('options').notNull().$defaultFn(() => ({})),
+    labelFormat: text('label_format', { enum: labelFormatValues }).notNull().default('pdf'),
+    labelSize: text('label_size', { enum: labelSizeValues }).notNull().default('A6'),
     error: text('error'),
     pollAttempts: integer('poll_attempts').notNull().default(0),
-    trackingPushedAt: timestamp('tracking_pushed_at', { withTimezone: true }),
+    trackingPushedAt: ts('tracking_pushed_at'),
     trackingPushError: text('tracking_push_error'),
     deliveryStatus: text('delivery_status'),
-    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
-    batchId: uuid('batch_id').references(() => shipmentBatches.id, { onDelete: 'set null' }),
-    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    deliveredAt: ts('delivered_at'),
+    batchId: text('batch_id').references(() => shipmentBatches.id, { onDelete: 'set null' }),
+    createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -302,20 +288,21 @@ export const shipments = pgTable(
   ],
 );
 
-export const labelFiles = pgTable('label_files', {
-  shipmentId: uuid('shipment_id')
+export const labelFiles = sqliteTable('label_files', {
+  shipmentId: text('shipment_id')
     .primaryKey()
     .references(() => shipments.id, { onDelete: 'cascade' }),
-  format: labelFormat('format').notNull(),
-  size: labelSize('size').notNull(),
-  content: bytea('content').notNull(),
+  format: text('format', { enum: labelFormatValues }).notNull(),
+  size: text('size', { enum: labelSizeValues }).notNull(),
+  /** R2 object key; the file itself lives in the LABELS bucket. */
+  r2Key: text('r2_key').notNull(),
   createdAt: createdAt(),
 });
 
 // ---------------------------------------------------------------- inventory
 
-export const products = pgTable('products', {
-  id: uuid('id').primaryKey().defaultRandom(),
+export const products = sqliteTable('products', {
+  id: id(),
   sku: text('sku').notNull().unique(),
   name: text('name').notNull(),
   /** Master stock; every marketplace listing is set to this number. */
@@ -324,23 +311,23 @@ export const products = pgTable('products', {
   updatedAt: updatedAt(),
 });
 
-export const productListings = pgTable(
+export const productListings = sqliteTable(
   'product_listings',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    accountId: uuid('account_id')
+    id: id(),
+    accountId: text('account_id')
       .notNull()
       .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
-    productId: uuid('product_id').references(() => products.id, { onDelete: 'set null' }),
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
     externalId: text('external_id').notNull(),
     sku: text('sku'),
     title: text('title').notNull(),
-    ref: jsonb('ref').$type<Record<string, string | number | null>>().notNull().default({}),
+    ref: json<Record<string, string | number | null>>('ref').notNull().$defaultFn(() => ({})),
     /** Quantity the marketplace reported at the last import. */
     lastSeenQty: integer('last_seen_qty'),
-    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    lastSeenAt: ts('last_seen_at'),
     lastPushedQty: integer('last_pushed_qty'),
-    lastPushedAt: timestamp('last_pushed_at', { withTimezone: true }),
+    lastPushedAt: ts('last_pushed_at'),
     lastPushError: text('last_push_error'),
     createdAt: createdAt(),
   },
@@ -350,47 +337,53 @@ export const productListings = pgTable(
   ],
 );
 
-export const stockMovements = pgTable(
+export const stockMovements = sqliteTable(
   'stock_movements',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    productId: uuid('product_id')
+    id: id(),
+    productId: text('product_id')
       .notNull()
       .references(() => products.id, { onDelete: 'cascade' }),
     delta: integer('delta').notNull(),
     /** order | cancel | manual | import */
     reason: text('reason').notNull(),
-    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    orderId: text('order_id').references(() => orders.id, { onDelete: 'set null' }),
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
     note: text('note'),
     createdAt: createdAt(),
   },
   (t) => [index('stock_movements_product_idx').on(t.productId, t.createdAt)],
 );
 
-export const stockSyncLog = pgTable(
+export const stockSyncLog = sqliteTable(
   'stock_sync_log',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    accountId: uuid('account_id')
+    id: id(),
+    accountId: text('account_id')
       .notNull()
       .references(() => marketplaceAccounts.id, { onDelete: 'cascade' }),
-    listingId: uuid('listing_id').references(() => productListings.id, { onDelete: 'cascade' }),
+    listingId: text('listing_id').references(() => productListings.id, { onDelete: 'cascade' }),
     quantity: integer('quantity').notNull(),
-    dryRun: boolean('dry_run').notNull(),
-    ok: boolean('ok').notNull(),
+    dryRun: bool('dry_run').notNull(),
+    ok: bool('ok').notNull(),
     error: text('error'),
     createdAt: createdAt(),
   },
   (t) => [index('stock_sync_log_created_idx').on(t.createdAt)],
 );
 
+/** Singleton/debounce keys for queued jobs (Cloudflare Queues has no built-in dedupe). */
+export const jobLocks = sqliteTable('job_locks', {
+  key: text('key').primaryKey(),
+  until: ts('until').notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type MarketplaceAccount = typeof marketplaceAccounts.$inferSelect;
 export type CarrierAccount = typeof carrierAccounts.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
-export type OrderStatus = (typeof orderStatus.enumValues)[number];
+export type OrderStatus = (typeof orderStatusValues)[number];
 export type Shipment = typeof shipments.$inferSelect;
 export type ShippingRule = typeof shippingRules.$inferSelect;
 export type PackagePreset = typeof packagePresets.$inferSelect;
