@@ -5,8 +5,8 @@ type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
 export function buttonClass(variant: ButtonVariant = 'secondary', size: 'sm' | 'md' = 'md') {
   return cn(
-    'inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap',
-    size === 'sm' ? 'h-8 px-2.5 text-xs' : 'h-9 px-3.5 text-sm',
+    'inline-flex items-center justify-center gap-1.5 rounded-full font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap',
+    size === 'sm' ? 'h-8 px-3 text-xs' : 'h-10 px-5 text-sm',
     variant === 'primary' && 'bg-brand-600 text-white hover:bg-brand-700',
     variant === 'secondary' && 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
     variant === 'danger' && 'border border-red-200 bg-white text-red-700 hover:bg-red-50',
@@ -25,7 +25,7 @@ export function Button({
 
 export function Card({ className, children, ...props }: ComponentProps<'section'>) {
   return (
-    <section className={cn('rounded-lg border border-slate-200 bg-white shadow-sm', className)} {...props}>
+    <section className={cn('rounded-2xl border border-black/5 bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]', className)} {...props}>
       {children}
     </section>
   );
@@ -33,7 +33,7 @@ export function Card({ className, children, ...props }: ComponentProps<'section'
 
 export function CardHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
       <div>
         <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
         {description && <p className="mt-0.5 text-xs text-slate-500">{description}</p>}
@@ -44,7 +44,7 @@ export function CardHeader({ title, description, actions }: { title: ReactNode; 
 }
 
 export function CardBody({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn('px-4 py-3', className)}>{children}</div>;
+  return <div className={cn('px-5 py-4', className)}>{children}</div>;
 }
 
 const BADGE_TONES = {
@@ -67,14 +67,14 @@ export function Badge({ tone = 'gray', className, children }: { tone?: BadgeTone
   );
 }
 
-const FIELD = 'block w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm text-slate-900 shadow-xs focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-50';
+const FIELD = 'block w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm text-slate-900 shadow-xs focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-50';
 
 export function Input({ className, ...props }: ComponentProps<'input'>) {
-  return <input className={cn(FIELD, 'h-9', className)} {...props} />;
+  return <input className={cn(FIELD, 'h-10', className)} {...props} />;
 }
 
 export function Select({ className, ...props }: ComponentProps<'select'>) {
-  return <select className={cn(FIELD, 'h-9 pr-8', className)} {...props} />;
+  return <select className={cn(FIELD, 'h-10 pr-8', className)} {...props} />;
 }
 
 export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
@@ -104,7 +104,7 @@ export function PageHeader({ title, description, actions }: { title: ReactNode; 
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight text-slate-900">{title}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
         {description && <p className="mt-1 text-sm text-slate-500">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}

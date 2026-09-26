@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { getDb, insertStatements, type Tx } from '../db/client';
 import {
   marketplaceAccounts,
@@ -148,6 +148,15 @@ export async function upsertOrders(
         })
         .where(eq(orders.id, existing.id));
 
+      // Fill in product photos for orders imported before photos were stored.
+      for (const item of n.items) {
+        if (!item.imageUrl) continue;
+        await tx
+          .update(orderItems)
+          .set({ imageUrl: item.imageUrl })
+          .where(and(eq(orderItems.orderId, existing.id), eq(orderItems.externalLineId, item.externalLineId), isNull(orderItems.imageUrl)));
+      }
+
       if (n.marketplaceStatus !== existing.marketplaceStatus) {
         await logEvent(tx, existing.id, 'sync', `Marketplace status: ${existing.marketplaceStatus} → ${n.marketplaceStatus}`);
       }
@@ -181,6 +190,7 @@ async function itemStatements(tx: Tx, orderId: string, n: NormalizedOrder) {
       quantity: i.quantity,
       unitPrice: i.unitPrice,
       externalProductId: i.externalProductId ?? null,
+      imageUrl: i.imageUrl ?? null,
       productId: i.sku ? (bySku.get(i.sku) ?? null) : null,
     })),
   );
@@ -282,6 +292,8 @@ function filterConditions(f: OrderFilters): SQL[] {
         // SQLite LIKE is case-insensitive for ASCII.
         like(orders.externalNumber, pattern),
         like(orders.externalId, pattern),
+        like(orders.deliveryMethodName, pattern),
+        like(orders.pickupPointId, pattern),
         sql`json_extract(${orders.buyer}, '$.name') like ${pattern}`,
         sql`json_extract(${orders.buyer}, '$.email') like ${pattern}`,
         sql`exists (select 1 from ${shipments} s where s.order_id = ${orders.id} and s.tracking_number like ${pattern})`,

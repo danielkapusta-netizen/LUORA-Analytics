@@ -44,6 +44,7 @@ export const miraklOrderSchema = z.object({
       /** Line total without shipping. */
       price: z.number(),
       price_unit: z.number().nullish(),
+      product_medias: z.array(z.object({ media_url: z.string(), type: z.string().nullish() })).nullish(),
       order_line_state: z.string().nullish(),
     }),
   ),
@@ -114,6 +115,7 @@ export function mapMiraklOrder(raw: unknown): NormalizedOrder {
       quantity: l.quantity,
       unitPrice: money(l.price_unit ?? (l.quantity > 0 ? l.price / l.quantity : l.price)),
       externalProductId: l.offer_id != null ? String(l.offer_id) : null,
+      imageUrl: (l.product_medias?.find((m) => m.type?.toLowerCase() === 'small') ?? l.product_medias?.[0])?.media_url ?? null,
     })),
     revision: o.last_updated_date,
     raw,

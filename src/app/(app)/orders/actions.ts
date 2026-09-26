@@ -12,6 +12,7 @@ import {
   acceptOrder,
   addNote,
   assignOrder,
+  loadOrder,
   refreshOrder,
   setTags,
   updateShippingDetails,
@@ -19,9 +20,12 @@ import {
 import {
   cancelShipment,
   createBatch,
+  loadRoutingData,
   pollNow,
+  presetToParcel,
   requestShipment,
   retryShipment,
+  routeOrder,
   ShippingError,
 } from '@/server/services/shipping';
 import { retryTrackingPush } from '@/server/services/tracking';
@@ -219,5 +223,30 @@ export async function retryTrackingAction(orderId: string, shipmentId: string): 
     await retryTrackingPush(shipmentId);
     refresh(orderId);
     return 'Sending tracking again…';
+  });
+}
+
+/** One-click label from the details panel, using the carrier and package chosen by the shipping rules. */
+export async function quickLabelAction(orderId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  return attempt(async () => {
+    const order = await loadOrder(orderId);
+    const data = await loadRoutingData();
+    const route = routeOrder(order, data);
+    if (!route) throw new ShippingError('No shipping rule matches this order. Open the full order to choose a carrier.');
+    const preset = data.presets.find((p) => p.id === route.packagePresetId) ?? data.presets.find((p) => p.isDefault) ?? data.presets[0];
+    if (!preset) throw new ShippingError('Add a package preset in Settings → Shipping first.');
+    await requestShipment(
+      {
+        orderId,
+        carrierAccountId: route.carrierAccountId,
+        service: route.service,
+        parcel: presetToParcel(preset),
+        options: { codAmount: order.codAmount, pickupPointId: order.pickupPointId },
+      },
+      user.id,
+    );
+    refresh(orderId);
+    return 'Label requested – it appears here in a few seconds.';
   });
 }

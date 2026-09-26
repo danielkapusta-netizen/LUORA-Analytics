@@ -25,10 +25,17 @@ test('orders to labels to analytics', async ({ page }) => {
   }
   await shot(page, '01-orders');
 
-  // Single label: a Shopify order going to a parcel locker.
-  await page.goto('/orders?marketplace=shopify&q=');
-  const lockerRow = page.locator('tbody tr', { hasText: /Point [A-Z]{3}\d/ }).first();
-  await lockerRow.getByRole('link').first().click();
+  // Picking a row shows its details on the right.
+  await page.locator('tbody tr').nth(1).click();
+  await expect(page).toHaveURL(/order=/);
+  await expect(page.getByRole('button', { name: 'Generate shipping label' })).toBeVisible();
+  await expect(page.getByText('Order items')).toBeVisible();
+  await shot(page, '01b-order-panel');
+
+  // Single label: a Shopify order going to a parcel locker, from the full order view.
+  await page.goto('/orders?marketplace=shopify&q=Paczkomat');
+  await page.locator('tbody tr').first().click();
+  await page.getByRole('link', { name: 'Open full order' }).click();
   await expect(page.getByText('Suggested by rule')).toBeVisible();
   await expect(page.locator('select[name="service"]')).toHaveValue('inpost_locker_standard');
   await shot(page, '02-order-detail');
@@ -44,7 +51,7 @@ test('orders to labels to analytics', async ({ page }) => {
   await page.goto('/orders?marketplace=allegro');
   const boxes = page.locator('tbody input[type="checkbox"]');
   for (let i = 0; i < 3; i++) await boxes.nth(i).check();
-  await page.getByRole('button', { name: 'Create labels' }).click();
+  await page.getByRole('button', { name: 'Generate labels' }).click();
   await expect(page).toHaveURL(/\/shipments\/batches\//);
   await expect(page.getByText('3 ready')).toBeVisible({ timeout: 45_000 });
   const merged = await page.getByRole('link', { name: /Print 3 label/ }).getAttribute('href');

@@ -12,6 +12,20 @@ export const MOCK_CATALOG = [
   { sku: 'LUO-NTB-A5', name: 'Notes A5 w kropki', price: 29.9 },
 ];
 
+/** Placeholder product photo: a soft tile with the product's initials (demo mode only). */
+export function mockProductImage(sku: string, name: string): string {
+  const hues = [152, 28, 205, 340, 45, 265];
+  const hue = hues[[...sku].reduce((a, c) => a + c.charCodeAt(0), 0) % hues.length];
+  const initials = name
+    .split(/\s+/)
+    .filter((w) => /^[A-Za-zÀ-ž]/.test(w))
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="120" height="120" rx="16" fill="hsl(${hue} 45% 92%)"/><rect x="30" y="34" width="60" height="52" rx="10" fill="hsl(${hue} 40% 70%)"/><text x="60" y="68" font-family="sans-serif" font-size="20" font-weight="700" text-anchor="middle" fill="hsl(${hue} 45% 25%)">${initials}</text></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+}
+
 const FIRST = ['Anna', 'Piotr', 'Katarzyna', 'Tomasz', 'Magdalena', 'Michał', 'Agnieszka', 'Paweł', 'Ewa', 'Jakub'];
 const LAST = ['Nowak', 'Kowalska', 'Wiśniewski', 'Wójcik', 'Kamińska', 'Lewandowski', 'Zielińska', 'Szymański'];
 const CITIES = [
@@ -106,6 +120,7 @@ export class MockMarketplaceAdapter implements MarketplaceAdapter {
       quantity: 1 + Math.floor(rand() * 2),
       unitPrice: p.price.toFixed(2),
       externalProductId: `offer-${p.sku}`,
+      imageUrl: mockProductImage(p.sku, p.name),
     }));
     const shipping = delivery.locker ? 12.99 : 16.99;
     const total = items.reduce((sum, i) => sum + Number(i.unitPrice) * i.quantity, 0) + shipping;

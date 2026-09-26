@@ -174,6 +174,8 @@ export const orderItems = sqliteTable(
     quantity: integer('quantity').notNull(),
     unitPrice: text('unit_price').notNull(),
     externalProductId: text('external_product_id'),
+    /** Product photo from the marketplace. */
+    imageUrl: text('image_url'),
     productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
   },
   (t) => [index('order_items_order_idx').on(t.orderId), index('order_items_sku_idx').on(t.sku)],

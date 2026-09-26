@@ -2,11 +2,16 @@
 
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --color-brand-50: #eef6ff;
-  --color-brand-100: #d9ebff;
-  --color-brand-500: #2f6fed;
-  --color-brand-600: #1f5bd6;
-  --color-brand-700: #1a4aad;
+  /* Brand green, used for primary actions and selection. */
+  --color-brand-50: #edf6f0;
+  --color-brand-100: #d5eadc;
+  --color-brand-500: #2e8b57;
+  --color-brand-600: #1f7a4a;
+  --color-brand-700: #17603a;
+  /* Dark green sidebar and warm off-white page, as in the reference design. */
+  --color-sidebar: #1f3530;
+  --color-sidebar-active: #2e4a43;
+  --color-canvas: #f4f3ee;
 }
 
 html {
@@ -14,7 +19,7 @@ html {
 }
 
 body {
-  background: var(--color-slate-50);
+  background: var(--color-canvas);
   color: var(--color-slate-900);
 }
 

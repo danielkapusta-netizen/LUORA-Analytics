@@ -17,6 +17,7 @@ const ORDER_FIELDS = `
     nodes {
       id sku name quantity
       originalUnitPriceSet { shopMoney { amount currencyCode } }
+      image { url(transform: { maxWidth: 240 }) }
       variant { id inventoryItem { id } }
     }
   }`;

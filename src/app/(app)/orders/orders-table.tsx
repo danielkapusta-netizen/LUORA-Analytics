@@ -1,12 +1,12 @@
 'use client';
 
-import { Printer, Tag, Truck } from 'lucide-react';
-import Link from 'next/link';
+import { Printer, Truck } from 'lucide-react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useMemo, useState } from 'react';
-import { MarketplaceBadge, ShipmentBadge, StatusBadge } from '@/components/badges';
+import { MarketplaceBadge, StatusBadge } from '@/components/badges';
 import { ActionForm, SubmitButton } from '@/components/forms';
-import { buttonClass, EmptyState, Select, td, th } from '@/components/ui';
-import { cn, formatDate, formatMoney } from '@/lib/utils';
+import { buttonClass, EmptyState, Select } from '@/components/ui';
+import { cn, formatMoney } from '@/lib/utils';
 import type { OrderStatus } from '@/server/db/schema';
 import { bulkAssignAction, bulkCreateLabelsAction, bulkStatusAction } from './actions';
 
@@ -22,35 +22,47 @@ export interface OrderRow {
   total: string;
   currency: string;
   cod: boolean;
-  delivery: string | null;
-  pickupPoint: string | null;
   status: OrderStatus;
   readyToShip: boolean;
   marketplaceStatus: string;
   assignee: string | null;
-  tags: string[];
+  courier: string | null;
   shipment: { id: string; state: string; trackingNumber: string | null; carrier: string; hasLabel: boolean } | null;
+}
+
+const th = 'px-3 py-3 text-left text-xs font-medium text-slate-500';
+const td = 'px-3 py-3.5 text-sm';
+
+function shortDate(iso: string): string {
+  return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'Europe/Warsaw' }).format(new Date(iso));
 }
 
 export function OrdersTable({
   rows,
+  selectedId,
   users,
   statuses,
 }: {
   rows: OrderRow[];
+  selectedId: string | null;
   users: { id: string; name: string }[];
   statuses: { value: string; label: string }[];
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
-  const ids = [...selected].join(',');
-  const labelIds = useMemo(
-    () => rows.filter((r) => selected.has(r.id) && r.shipment?.hasLabel).map((r) => r.shipment!.id),
-    [rows, selected],
-  );
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const allChecked = rows.length > 0 && rows.every((r) => checked.has(r.id));
+  const ids = [...checked].join(',');
+  const labelIds = useMemo(() => rows.filter((r) => checked.has(r.id) && r.shipment?.hasLabel).map((r) => r.shipment!.id), [rows, checked]);
 
+  const open = (id: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.set('order', id);
+    router.push(`${pathname}?${next}`, { scroll: false });
+  };
   const toggle = (id: string) =>
-    setSelected((prev) => {
+    setChecked((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -61,13 +73,13 @@ export function OrdersTable({
 
   return (
     <>
-      {selected.size > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-brand-100 bg-brand-50 px-4 py-2">
-          <span className="text-sm font-medium text-brand-700">{selected.size} selected</span>
+      {checked.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 border-b border-brand-100 bg-brand-50 px-5 py-2.5">
+          <span className="text-sm font-medium text-brand-700">{checked.size} selected</span>
           <ActionForm action={bulkCreateLabelsAction} showOk={false}>
             <input type="hidden" name="ids" value={ids} />
             <SubmitButton size="sm" pendingText="Queuing labels…">
-              <Truck className="size-3.5" /> Create labels
+              <Truck className="size-3.5" /> Generate labels
             </SubmitButton>
           </ActionForm>
           {labelIds.length > 0 && (
@@ -105,107 +117,83 @@ export function OrdersTable({
               Assign
             </SubmitButton>
           </ActionForm>
-          <button className="ml-auto text-xs text-brand-700 hover:underline" onClick={() => setSelected(new Set())}>
+          <button className="ml-auto text-xs text-brand-700 hover:underline" onClick={() => setChecked(new Set())}>
             Clear selection
           </button>
         </div>
       )}
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-slate-100">
-          <thead className="bg-slate-50">
+        <table className="min-w-full">
+          <thead className="border-b border-slate-100">
             <tr>
-              <th className={cn(th, 'w-8')}>
+              <th className={cn(th, 'w-10 pl-5')}>
                 <input
                   type="checkbox"
                   aria-label="Select all"
-                  className="size-4 rounded border-slate-300"
-                  checked={allSelected}
-                  onChange={() => setSelected(allSelected ? new Set() : new Set(rows.map((r) => r.id)))}
+                  className="size-4 rounded accent-brand-600"
+                  checked={allChecked}
+                  onChange={() => setChecked(allChecked ? new Set() : new Set(rows.map((r) => r.id)))}
                 />
               </th>
-              <th className={th}>Order</th>
-              <th className={th}>Placed</th>
-              <th className={th}>Buyer</th>
-              <th className={cn(th, 'text-right')}>Total</th>
-              <th className={th}>Delivery</th>
+              <th className={th}>Order #</th>
+              <th className={th}>Customer</th>
+              <th className={th}>Source</th>
+              <th className={cn(th, 'hidden 2xl:table-cell')}>Courier</th>
+              <th className={cn(th, 'hidden 2xl:table-cell')}>Date</th>
               <th className={th}>Status</th>
-              <th className={th}>Label</th>
+              <th className={cn(th, 'pr-5 text-right')}>Total</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.map((r) => (
-              <tr key={r.id} className={cn('hover:bg-slate-50', selected.has(r.id) && 'bg-brand-50/50')}>
-                <td className={td}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Select order ${r.number}`}
-                    className="size-4 rounded border-slate-300"
-                    checked={selected.has(r.id)}
-                    onChange={() => toggle(r.id)}
-                  />
-                </td>
-                <td className={td}>
-                  <Link href={`/orders/${r.id}`} className="font-medium text-brand-700 hover:underline">
+          <tbody>
+            {rows.map((r) => {
+              const active = r.id === selectedId;
+              return (
+                <tr
+                  key={r.id}
+                  onClick={() => open(r.id)}
+                  className={cn(
+                    'cursor-pointer border-b border-slate-50 transition-colors last:border-0',
+                    active ? 'bg-brand-50/70' : checked.has(r.id) ? 'bg-slate-50' : 'hover:bg-slate-50/70',
+                  )}
+                >
+                  <td className={cn(td, 'pl-5')} onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select order ${r.number}`}
+                      className="size-4 rounded accent-brand-600"
+                      checked={checked.has(r.id)}
+                      onChange={() => toggle(r.id)}
+                    />
+                  </td>
+                  <td className={cn(td, 'font-medium whitespace-nowrap', active && 'text-brand-700')}>
                     {r.number}
-                  </Link>
-                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <div className="text-xs font-normal text-slate-400 2xl:hidden">{shortDate(r.placedAt)}</div>
+                  </td>
+                  <td className={td}>
+                    <div className="font-medium whitespace-nowrap text-slate-800">{r.buyer}</div>
+                    <div className="text-xs whitespace-nowrap text-slate-400">
+                      {r.city} · {r.itemCount} item{r.itemCount === 1 ? '' : 's'}
+                    </div>
+                  </td>
+                  <td className={td}>
                     <MarketplaceBadge marketplace={r.marketplace} />
-                    <span className="text-xs text-slate-500">{r.accountName}</span>
-                  </div>
-                </td>
-                <td className={cn(td, 'whitespace-nowrap text-slate-600')}>{formatDate(r.placedAt)}</td>
-                <td className={td}>
-                  <div>{r.buyer}</div>
-                  <div className="text-xs text-slate-500">
-                    {r.city} · {r.itemCount} item(s)
-                  </div>
-                </td>
-                <td className={cn(td, 'whitespace-nowrap text-right tabular-nums')}>
-                  {formatMoney(r.total, r.currency)}
-                  {r.cod && <div className="text-xs font-medium text-orange-700">COD</div>}
-                </td>
-                <td className={td}>
-                  <div className="max-w-48 truncate" title={r.delivery ?? ''}>
-                    {r.delivery ?? '—'}
-                  </div>
-                  {r.pickupPoint && <div className="text-xs font-medium text-slate-600">Point {r.pickupPoint}</div>}
-                </td>
-                <td className={td}>
-                  <StatusBadge status={r.status} />
-                  {!r.readyToShip && r.status !== 'cancelled' && (
-                    <div className="mt-1 text-xs text-amber-700" title={r.marketplaceStatus}>
-                      Not ready: {r.marketplaceStatus}
-                    </div>
-                  )}
-                  {r.assignee && <div className="mt-1 text-xs text-slate-500">{r.assignee}</div>}
-                  {r.tags.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {r.tags.map((t) => (
-                        <span key={t} className="inline-flex items-center gap-0.5 text-xs text-slate-500">
-                          <Tag className="size-3" />
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </td>
-                <td className={td}>
-                  {r.shipment ? (
-                    <div>
-                      <ShipmentBadge state={r.shipment.state} />
-                      {r.shipment.trackingNumber && <div className="mt-1 font-mono text-xs text-slate-600">{r.shipment.trackingNumber}</div>}
-                      {r.shipment.hasLabel && (
-                        <a href={`/api/labels/${r.shipment.id}`} target="_blank" rel="noreferrer" className="text-xs text-brand-700 hover:underline">
-                          Print label
-                        </a>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="text-xs text-slate-400">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className={cn(td, 'hidden max-w-40 truncate text-slate-600 2xl:table-cell')} title={r.courier ?? undefined}>
+                    {r.courier ?? <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className={cn(td, 'hidden whitespace-nowrap text-slate-600 2xl:table-cell')}>{shortDate(r.placedAt)}</td>
+                  <td className={td}>
+                    <StatusBadge status={r.status} />
+                    {!r.readyToShip && r.status !== 'cancelled' && <div className="mt-1 text-[11px] text-amber-700">Awaiting marketplace</div>}
+                    {r.shipment?.state === 'failed' && <div className="mt-1 text-[11px] text-red-700">Label failed</div>}
+                  </td>
+                  <td className={cn(td, 'pr-5 text-right font-medium whitespace-nowrap tabular-nums')}>
+                    {formatMoney(r.total, r.currency)}
+                    {r.cod && <div className="text-[11px] font-medium text-orange-700">COD</div>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

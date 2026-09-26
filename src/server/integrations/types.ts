@@ -35,6 +35,7 @@ export interface NormalizedOrderItem {
   unitPrice: string;
   /** Offer id (Allegro, Empik) or variant id (Shopify) the line was bought from. */
   externalProductId?: string | null;
+  imageUrl?: string | null;
 }
 
 export interface NormalizedOrder {

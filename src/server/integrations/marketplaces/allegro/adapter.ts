@@ -54,6 +54,7 @@ export class AllegroAdapter implements MarketplaceAdapter {
       const form = await this.client.call<{ status: string }>('GET', `/order/checkout-forms/${id}`);
       if (IMPORTABLE_STATUSES.has(form.status)) orders.push(mapAllegroCheckoutForm(form));
     }
+    await this.addImages(orders);
     return {
       orders,
       nextCursor: events.at(-1)?.id ?? cursor,
@@ -79,12 +80,37 @@ export class AllegroAdapter implements MarketplaceAdapter {
       orders.push(...page.checkoutForms.map(mapAllegroCheckoutForm));
       if (page.checkoutForms.length < 100 || offset + 100 >= page.totalCount) break;
     }
+    await this.addImages(orders);
     return { orders, nextCursor: stats.latestEvent?.id ?? NO_EVENTS, hasMore: false };
   }
 
   async getOrder(externalId: string): Promise<NormalizedOrder | null> {
     const form = await this.client.call<unknown>('GET', `/order/checkout-forms/${externalId}`);
-    return form ? mapAllegroCheckoutForm(form) : null;
+    if (!form) return null;
+    const order = mapAllegroCheckoutForm(form);
+    await this.addImages([order]);
+    return order;
+  }
+
+  private imageCache = new Map<string, string | null>();
+
+  /** Checkout forms carry no photos, so each offer's first image is looked up once. */
+  private async addImages(orders: NormalizedOrder[]): Promise<void> {
+    for (const item of orders.flatMap((o) => o.items)) {
+      const offerId = item.externalProductId;
+      if (!offerId || item.imageUrl) continue;
+      if (!this.imageCache.has(offerId)) {
+        try {
+          const offer = await this.client.call<{ images?: (string | { url?: string })[] }>('GET', `/sale/product-offers/${offerId}`);
+          const first = offer.images?.[0];
+          this.imageCache.set(offerId, typeof first === 'string' ? first : (first?.url ?? null));
+        } catch {
+          // Ended or foreign offers can't be read; the item just has no photo.
+          this.imageCache.set(offerId, null);
+        }
+      }
+      item.imageUrl = this.imageCache.get(offerId) ?? null;
+    }
   }
 
   async markProcessing(order: OrderRef): Promise<void> {
