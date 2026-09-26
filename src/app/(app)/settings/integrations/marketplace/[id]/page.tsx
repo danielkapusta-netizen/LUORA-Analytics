@@ -3,18 +3,18 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/forms';
-import { Card, CardBody, CardHeader, Checkbox, Field, Input } from '@/components/ui';
+import { Card, CardBody, CardHeader, Checkbox, Field, Input, Select } from '@/components/ui';
 import { MARKETPLACE_LABELS } from '@/lib/utils';
 import { requireAdmin } from '@/server/auth';
 import type { MarketplaceAccount } from '@/server/db/schema';
 import { env } from '@/server/env';
 import { ALLEGRO_REDIRECT_PATH } from '@/server/integrations/marketplaces/allegro/client';
-import { EMPIK_CARRIER_CODES } from '@/server/integrations/marketplaces/empik/adapter';
+import { EMPIK_CARRIER_CODES, resolveEmpikCarrier } from '@/server/integrations/marketplaces/empik/adapter';
 import { DEFAULT_SHOPIFY_API_VERSION } from '@/server/integrations/marketplaces/shopify/client';
 import { DEFAULT_PICKUP_POINT_KEYS } from '@/server/integrations/marketplaces/shopify/mapper';
 import { loadMarketplaceAccount } from '@/server/services/accounts';
-import { publicCredentialFields, storedCredentialKeys } from '@/server/services/settings';
-import { deleteMarketplaceAction, importListingsAction, saveMarketplaceAction } from '../../../actions';
+import { empikCarriers, publicCredentialFields, storedCredentialKeys } from '@/server/services/settings';
+import { deleteMarketplaceAction, importListingsAction, refreshEmpikCarriersAction, saveMarketplaceAction } from '../../../actions';
 
 export const metadata: Metadata = { title: 'Marketplace account' };
 
@@ -43,6 +43,21 @@ export default async function MarketplaceAccountPage({ params, searchParams }: {
   const stored = storedCredentialKeys(account?.credentials ?? null);
   const pub = publicCredentialFields(account?.credentials ?? null);
   const s = account?.settings ?? {};
+  let empikList: { code: string; label: string }[] = [];
+  let empikError: string | null = null;
+  if (account && type === 'empik') {
+    try {
+      empikList = await empikCarriers(account.id);
+    } catch (err) {
+      empikError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  const lockerCarrier = empikList.length
+    ? resolveEmpikCarrier([s.carrierCodes?.inpostLocker, EMPIK_CARRIER_CODES.inpostLocker], empikList, 'inpostLocker')?.code
+    : s.carrierCodes?.inpostLocker;
+  const courierCarrier = empikList.length
+    ? resolveEmpikCarrier([s.carrierCodes?.inpostCourier, EMPIK_CARRIER_CODES.inpostCourier], empikList, 'inpostCourier')?.code
+    : s.carrierCodes?.inpostCourier;
   const str = (key: string) => (typeof pub[key] === 'string' ? (pub[key] as string) : '');
 
   return (
@@ -122,12 +137,29 @@ export default async function MarketplaceAccountPage({ params, searchParams }: {
                   <Field label="Shop ID (optional)">
                     <Input name="shopId" defaultValue={str('shopId')} />
                   </Field>
-                  <Field label="Empik carrier code: InPost Paczkomat" hint={`Empik's code; default ${EMPIK_CARRIER_CODES.inpostLocker}`}>
-                    <Input name="carrierCodeInpostLocker" defaultValue={s.carrierCodes?.inpostLocker ?? EMPIK_CARRIER_CODES.inpostLocker} />
-                  </Field>
-                  <Field label="Empik carrier code: InPost courier" hint={`Empik's code; default ${EMPIK_CARRIER_CODES.inpostCourier}`}>
-                    <Input name="carrierCodeInpostCourier" defaultValue={s.carrierCodes?.inpostCourier ?? EMPIK_CARRIER_CODES.inpostCourier} />
-                  </Field>
+                  {(
+                    [
+                      ['carrierCodeInpostLocker', 'Empik carrier for InPost Paczkomat labels', lockerCarrier, EMPIK_CARRIER_CODES.inpostLocker],
+                      ['carrierCodeInpostCourier', 'Empik carrier for InPost courier labels', courierCarrier, EMPIK_CARRIER_CODES.inpostCourier],
+                    ] as const
+                  ).map(([name, label, selected, fallback]) =>
+                    empikList.length ? (
+                      <Field key={name} label={label} hint="From Empik's carrier list (SH21)">
+                        <Select name={name} defaultValue={selected ?? ''}>
+                          <option value="">Pick automatically</option>
+                          {empikList.map((c) => (
+                            <option key={c.code} value={c.code}>
+                              {c.label} ({c.code})
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    ) : (
+                      <Field key={name} label={label} hint={`Empik's carrier code; leave blank for ${fallback}`}>
+                        <Input name={name} defaultValue={selected ?? ''} placeholder={fallback} />
+                      </Field>
+                    ),
+                  )}
                 </div>
                 <Checkbox name="autoAccept" label="Accept new orders automatically when stock covers them" defaultChecked={s.autoAccept ?? false} />
               </fieldset>
@@ -147,6 +179,12 @@ export default async function MarketplaceAccountPage({ params, searchParams }: {
 
       {account && (
         <div className="mt-5 flex flex-wrap gap-2">
+          {type === 'empik' && (
+            <ActionForm action={refreshEmpikCarriersAction.bind(null, account.id)}>
+              <SubmitButton variant="secondary">Refresh Empik carrier list</SubmitButton>
+              {empikError && <p className="mt-1 text-sm text-red-700">Could not load Empik carriers: {empikError}</p>}
+            </ActionForm>
+          )}
           <ActionForm action={importListingsAction.bind(null, account.id)}>
             <SubmitButton variant="secondary">Import listings for stock sync</SubmitButton>
           </ActionForm>

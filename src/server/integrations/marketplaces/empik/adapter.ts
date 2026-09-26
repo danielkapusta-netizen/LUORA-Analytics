@@ -1,7 +1,7 @@
 import type { MarketplaceSettings } from '../../../db/schema';
 import type { Listing, NormalizedOrder, OrderRef, StockUpdate, TrackingInfo } from '../../types';
 import type { MarketplaceAdapter, SyncResult } from '../types';
-import { MiraklClient, type EmpikCredentials } from './client';
+import { MiraklClient, type EmpikCredentials, type MiraklCarrier } from './client';
 import { mapMiraklOrder } from './mapper';
 
 const PAGE = 100;
@@ -37,6 +37,36 @@ const BY_CARRIER_ID: Record<string, string> = {
   ORLEN_PACZKA: EMPIK_CARRIER_CODES.orlen,
 };
 
+const CARRIER_CACHE_MS = 24 * 3600_000;
+
+const squash = (v: string) => v.toLowerCase().replace(/[\s_-]+/g, '');
+
+/**
+ * Finds the Empik carrier to send, using Empik's own list (SH21).
+ * Each candidate may be a code or a label ("PACZKOMATY INPOST"); if none matches,
+ * an InPost carrier is picked by label (locker vs courier).
+ */
+export function resolveEmpikCarrier(
+  candidates: (string | null | undefined)[],
+  carriers: MiraklCarrier[],
+  kind: 'inpostLocker' | 'inpostCourier' | null,
+): MiraklCarrier | null {
+  for (const candidate of candidates) {
+    if (!candidate?.trim()) continue;
+    const exact = carriers.find((c) => c.code === candidate.trim());
+    if (exact) return exact;
+    const loose = carriers.find((c) => squash(c.code) === squash(candidate) || squash(c.label) === squash(candidate));
+    if (loose) return loose;
+  }
+  if (kind) {
+    const inpost = carriers.filter((c) => /inpost/i.test(`${c.label} ${c.code}`));
+    const wantsLocker = kind === 'inpostLocker';
+    const match = inpost.find((c) => /paczkomat/i.test(`${c.label} ${c.code}`) === wantsLocker && (wantsLocker || /kurier/i.test(`${c.label} ${c.code}`)));
+    if (match) return match;
+  }
+  return null;
+}
+
 /** Picks Empik's carrier code for a shipment; null when Empik has no code for it. */
 export function empikCarrierCode(tracking: TrackingInfo): string | null {
   if (tracking.carrier === 'inpost') {
@@ -70,9 +100,21 @@ export class EmpikAdapter implements MarketplaceAdapter {
 
   constructor(
     creds: EmpikCredentials,
-    private readonly settings: MarketplaceSettings = {},
+    private settings: MarketplaceSettings = {},
+    /** Persists settings changes (the SH21 carrier cache). */
+    private readonly saveSettings?: (next: MarketplaceSettings) => Promise<void>,
   ) {
     this.client = new MiraklClient(creds);
+  }
+
+  /** Empik's carriers (SH21), cached in the account settings for a day. */
+  async carriers(forceRefresh = false): Promise<MiraklCarrier[]> {
+    const cache = this.settings.carrierCache;
+    if (!forceRefresh && cache && Date.now() - Date.parse(cache.fetchedAt) < CARRIER_CACHE_MS) return cache.carriers;
+    const carriers = await this.client.listCarriers();
+    this.settings = { ...this.settings, carrierCache: { fetchedAt: new Date().toISOString(), carriers } };
+    await this.saveSettings?.(this.settings);
+    return carriers;
   }
 
   async checkConnection(): Promise<string> {
@@ -123,13 +165,7 @@ export class EmpikAdapter implements MarketplaceAdapter {
     const current = await this.client.call<OrdersPage>('GET', '/orders', { query: { order_ids: order.externalId } });
     if (ALREADY_SHIPPED.has(current.orders[0]?.order_state ?? '')) return;
 
-    // A code set in the account settings wins; otherwise use Empik's registered code.
-    const slot = tracking.carrier === 'inpost' ? (tracking.service === 'inpost_courier_standard' ? 'inpostCourier' : 'inpostLocker') : null;
-    const carrierCode = (slot && this.settings.carrierCodes?.[slot]?.trim()) || empikCarrierCode(tracking);
-    const body = carrierCode
-      ? { carrier_code: carrierCode, tracking_number: tracking.trackingNumber }
-      : // Last resort for a carrier Empik has no code for ("unregistered" carrier in Mirakl terms).
-        { carrier_name: tracking.carrierName, carrier_url: tracking.trackingUrl ?? undefined, tracking_number: tracking.trackingNumber };
+    const body = await this.trackingBody(tracking);
     try {
       await this.client.call('PUT', `/orders/${id}/tracking`, { body, responseType: 'none' });
     } catch (err) {
@@ -140,6 +176,35 @@ export class EmpikAdapter implements MarketplaceAdapter {
     } catch (err) {
       throw new Error(`Tracking saved, but Empik refused to mark the order shipped (OR24): ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  /** Builds the OR23 body with a carrier code that exists in Empik's carrier list. */
+  private async trackingBody(tracking: TrackingInfo) {
+    const isInpost = tracking.carrier === 'inpost' || tracking.carrierCode?.toUpperCase() === 'INPOST';
+    const courier = tracking.service === 'inpost_courier_standard' || Boolean(tracking.service?.includes('courier'));
+    const kind = isInpost ? (courier ? 'inpostCourier' : 'inpostLocker') : null;
+    // The code chosen in settings wins; then Empik's documented default.
+    const candidates = [kind ? this.settings.carrierCodes?.[kind] : null, empikCarrierCode(tracking)];
+
+    let carriers: MiraklCarrier[] = [];
+    try {
+      carriers = await this.carriers();
+    } catch (err) {
+      // Carrier list unavailable: fall back to the documented code rather than blocking the shipment.
+      console.warn('[empik] SH21 failed:', err instanceof Error ? err.message : err);
+    }
+    if (carriers.length) {
+      let match = resolveEmpikCarrier(candidates, carriers, kind);
+      if (!match) match = resolveEmpikCarrier(candidates, await this.carriers(true), kind);
+      if (match) return { carrier_code: match.code, tracking_number: tracking.trackingNumber };
+      if (isInpost) {
+        throw new Error(`Empik has no carrier matching ${kind === 'inpostCourier' ? 'InPost courier' : 'InPost Paczkomat'}. Codes Empik offers: ${carriers.map((c) => `${c.code} (${c.label})`).join(', ')}`);
+      }
+    } else if (candidates.some(Boolean)) {
+      return { carrier_code: (candidates.find(Boolean) as string).trim(), tracking_number: tracking.trackingNumber };
+    }
+    // A carrier Empik has no code for: send it as an "unregistered" carrier with the tracking link.
+    return { carrier_name: tracking.carrierName, carrier_url: tracking.trackingUrl ?? undefined, tracking_number: tracking.trackingNumber };
   }
 
   /** OF21 */

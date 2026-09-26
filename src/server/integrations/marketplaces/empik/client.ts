@@ -9,8 +9,20 @@ export interface EmpikCredentials {
 }
 
 /** Empik Marketplace runs on Mirakl; this is a thin client for the Mirakl Seller API. */
+export interface MiraklCarrier {
+  code: string;
+  label: string;
+  tracking_url?: string | null;
+}
+
 export class MiraklClient {
   constructor(private readonly creds: EmpikCredentials) {}
+
+  /** SH21: carriers registered on the marketplace (call at most once a day). */
+  async listCarriers(): Promise<MiraklCarrier[]> {
+    const data = await this.call<{ carriers: MiraklCarrier[] }>('GET', '/shipping/carriers');
+    return data.carriers.map((c) => ({ code: c.code, label: c.label, tracking_url: c.tracking_url ?? null }));
+  }
 
   async call<T>(method: string, path: string, options: Omit<RequestOptions, 'method'> = {}): Promise<T> {
     const base = this.creds.baseUrl.replace(/\/+$/, '').replace(/\/api$/, '');

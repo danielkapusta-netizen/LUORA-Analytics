@@ -17,6 +17,7 @@ import {
 } from '../db/schema';
 import type { SenderSettings } from '../integrations/types';
 import { BUYER_CHOICE } from '../integrations/carriers/allegro-shipping/adapter';
+import { EmpikAdapter } from '../integrations/marketplaces/empik/adapter';
 import { MOCK_CATALOG } from '../integrations/marketplaces/mock/adapter';
 import { getCarrierAdapter, getMarketplaceAdapter, loadCarrierAccount, loadMarketplaceAccount, readCredentials, withConfigured } from './accounts';
 
@@ -312,4 +313,11 @@ export async function deleteUser(id: string): Promise<void> {
 export async function resetPassword(id: string, password: string): Promise<void> {
   if (password.length < 8) throw new Error('Password must have at least 8 characters');
   await getDb().update(users).set({ passwordHash: await hashPassword(password) }).where(eq(users.id, id));
+}
+
+/** Empik carriers (SH21) for the settings dropdowns; empty in demo mode or when Empik can't be reached. */
+export async function empikCarriers(accountId: string, refresh = false): Promise<{ code: string; label: string }[]> {
+  const adapter = getMarketplaceAdapter(await loadMarketplaceAccount(accountId));
+  if (!(adapter instanceof EmpikAdapter)) return [];
+  return adapter.carriers(refresh);
 }

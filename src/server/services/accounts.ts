@@ -48,7 +48,14 @@ export function getMarketplaceAdapter(account: MarketplaceAccount): MarketplaceA
     case 'empik': {
       const creds = readCredentials<EmpikCredentials>(account.credentials);
       if (!creds) throw new Error(`${account.name} has no API key yet. Add it in Settings → Integrations.`);
-      return new EmpikAdapter(creds, account.settings);
+      return new EmpikAdapter(creds, account.settings, async (next) => {
+        // Only the carrier cache changes here; merge into fresh settings so a concurrent edit isn't lost.
+        const fresh = await loadMarketplaceAccount(account.id);
+        await getDb()
+          .update(marketplaceAccounts)
+          .set({ settings: { ...fresh.settings, carrierCache: next.carrierCache } })
+          .where(eq(marketplaceAccounts.id, account.id));
+      });
     }
   }
 }

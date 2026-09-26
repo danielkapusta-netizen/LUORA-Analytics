@@ -70,6 +70,8 @@ export interface MarketplaceSettings {
   autoAccept?: boolean;
   /** Empik: carrier codes registered on the marketplace, keyed by our carrier. */
   carrierCodes?: Record<string, string>;
+  /** Empik: carriers from SH21, refreshed at most daily. */
+  carrierCache?: { fetchedAt: string; carriers: { code: string; label: string; tracking_url?: string | null }[] };
 }
 
 export const marketplaceAccounts = sqliteTable('marketplace_accounts', {

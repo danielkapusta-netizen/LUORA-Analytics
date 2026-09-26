@@ -14,6 +14,7 @@ import {
   deletePreset,
   deleteRule,
   deleteUser,
+  empikCarriers,
   removeDemoData,
   resetPassword,
   saveCarrierAccount,
@@ -97,6 +98,15 @@ export async function deleteMarketplaceAction(id: string): Promise<void> {
   }
   revalidatePath('/settings/integrations');
   backWith('Account deleted');
+}
+
+export async function refreshEmpikCarriersAction(id: string): Promise<ActionResult> {
+  await requireAdmin();
+  return attempt(async () => {
+    const carriers = await empikCarriers(id, true);
+    revalidatePath(`/settings/integrations/marketplace/${id}`);
+    return `Loaded ${carriers.length} carrier(s) from Empik`;
+  });
 }
 
 export async function testMarketplaceAction(id: string): Promise<ActionResult> {

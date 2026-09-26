@@ -2,7 +2,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import order from './fixtures/empik/order.json';
-import { buildStockCsv, EmpikAdapter, empikCarrierCode } from '@/server/integrations/marketplaces/empik/adapter';
+import { buildStockCsv, EmpikAdapter, empikCarrierCode, resolveEmpikCarrier } from '@/server/integrations/marketplaces/empik/adapter';
 import { mapMiraklOrder, toAlpha2 } from '@/server/integrations/marketplaces/empik/mapper';
 
 const server = setupServer();
@@ -57,9 +57,22 @@ describe('EmpikAdapter', () => {
     expect(result.nextCursor).toBe('2026-09-23T08:00:00Z');
   });
 
-  function trackingServer(state = { value: 'SHIPPING' }) {
+  // Empik's real list (SH21). The courier code deliberately differs from the help-centre table
+  // to prove the list, not the table, decides.
+  const CARRIERS = [
+    { code: 'dpd', label: 'DPD', tracking_url: null },
+    { code: 'paczkomatyinpost', label: 'PACZKOMATY INPOST', tracking_url: null },
+    { code: 'inpost-kurier', label: 'INPOST - Paczka kurierska', tracking_url: null },
+  ];
+
+  function trackingServer(state = { value: 'SHIPPING' }, carriers = CARRIERS) {
     const calls: string[] = [];
+    let sh21 = 0;
     server.use(
+      http.get(`${BASE}/api/shipping/carriers`, () => {
+        sh21++;
+        return HttpResponse.json({ carriers });
+      }),
       http.get(`${BASE}/api/orders`, () => HttpResponse.json({ orders: [{ ...order, order_state: state.value }], total_count: 1 })),
       http.put(`${BASE}/api/orders/:id/tracking`, async ({ request, params }) => {
         calls.push(`tracking ${params.id} ${JSON.stringify(await request.json())}`);
@@ -70,40 +83,56 @@ describe('EmpikAdapter', () => {
         return new HttpResponse(null, { status: 204 });
       }),
     );
-    return calls;
+    return { calls, sh21: () => sh21 };
   }
   const ref = { externalId: '210045-A', externalNumber: '210045', raw: order, items: [] };
+  const locker = { carrier: 'inpost' as const, carrierName: 'InPost', service: 'inpost_locker_standard', trackingNumber: '62001' };
+  const courier = { carrier: 'inpost' as const, carrierName: 'InPost', service: 'inpost_courier_standard', trackingNumber: '52000' };
 
-  it('sends Empik’s registered InPost locker code (OR23), then confirms shipment (OR24)', async () => {
+  it('sends a carrier code from Empik’s list (OR23), then confirms shipment (OR24), once', async () => {
     const state = { value: 'SHIPPING' };
-    const calls = trackingServer(state);
+    const { calls } = trackingServer(state);
     const adapter = new EmpikAdapter(creds);
-    await adapter.pushTracking(ref, {
-      carrier: 'inpost',
-      carrierName: 'InPost',
-      service: 'inpost_locker_standard',
-      trackingNumber: '62001',
-      trackingUrl: 'https://inpost.pl/sledzenie-przesylek?number=62001',
-    });
+    await adapter.pushTracking(ref, locker);
     expect(calls).toEqual(['tracking 210045-A {"carrier_code":"paczkomatyinpost","tracking_number":"62001"}', 'ship 210045-A']);
     state.value = 'SHIPPED';
-    await adapter.pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', trackingNumber: '62001' });
+    await adapter.pushTracking(ref, locker);
     expect(calls).toHaveLength(2);
   });
 
-  it('uses the InPost courier code for courier labels, and settings overrides', async () => {
-    const calls = trackingServer();
-    await new EmpikAdapter(creds).pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', service: 'inpost_courier_standard', trackingNumber: '1' });
-    await new EmpikAdapter(creds, { carrierCodes: { inpostLocker: 'custom-locker', inpost: 'InPost' } }).pushTracking(ref, {
-      carrier: 'inpost',
-      carrierName: 'InPost',
-      service: 'inpost_locker_standard',
-      trackingNumber: '2',
-    });
-    expect(calls.filter((c) => c.startsWith('tracking'))).toEqual([
-      'tracking 210045-A {"carrier_code":"inpostpaczkakurierska","tracking_number":"1"}',
-      'tracking 210045-A {"carrier_code":"custom-locker","tracking_number":"2"}',
-    ]);
+  it('finds the courier carrier by label when the documented code is not on the list', async () => {
+    const { calls } = trackingServer();
+    await new EmpikAdapter(creds).pushTracking(ref, courier);
+    expect(calls[0]).toBe('tracking 210045-A {"carrier_code":"inpost-kurier","tracking_number":"52000"}');
+  });
+
+  it('turns a label typed into settings ("PACZKOMATY INPOST") into its code', async () => {
+    const { calls } = trackingServer();
+    await new EmpikAdapter(creds, { carrierCodes: { inpostLocker: 'PACZKOMATY INPOST', inpost: 'PACZKOMATY INPOST' } }).pushTracking(ref, locker);
+    expect(calls[0]).toBe('tracking 210045-A {"carrier_code":"paczkomatyinpost","tracking_number":"62001"}');
+  });
+
+  it('caches the carrier list and saves it on the account', async () => {
+    const { sh21 } = trackingServer();
+    const saved: unknown[] = [];
+    const adapter = new EmpikAdapter(creds, {}, async (s) => void saved.push(s));
+    await adapter.pushTracking(ref, locker);
+    await adapter.pushTracking(ref, courier);
+    expect(sh21()).toBe(1);
+    expect(saved).toHaveLength(1);
+  });
+
+  it('refuses to send an InPost code Empik does not have, and lists what it has', async () => {
+    const { calls } = trackingServer({ value: 'SHIPPING' }, [{ code: 'dpd', label: 'DPD', tracking_url: null }]);
+    await expect(new EmpikAdapter(creds).pushTracking(ref, courier)).rejects.toThrow(/no carrier matching InPost courier.*dpd \(DPD\)/);
+    expect(calls).toEqual([]);
+  });
+
+  it('resolves carriers in pure form', () => {
+    expect(resolveEmpikCarrier(['inpost_paczka-kurierska'], CARRIERS, null)?.code).toBe('inpost-kurier');
+    expect(resolveEmpikCarrier(['gls'], CARRIERS, null)).toBeNull();
+    expect(resolveEmpikCarrier([null, 'Dpd'], CARRIERS, null)?.code).toBe('dpd');
+    expect(resolveEmpikCarrier([], CARRIERS, 'inpostLocker')?.code).toBe('paczkomatyinpost');
   });
 
   it('maps carriers reported by Allegro Delivery', () => {
@@ -114,12 +143,11 @@ describe('EmpikAdapter', () => {
 
   it('explains which step Empik rejected, with Empik’s message', async () => {
     server.use(
+      http.get(`${BASE}/api/shipping/carriers`, () => HttpResponse.json({ carriers: CARRIERS })),
       http.get(`${BASE}/api/orders`, () => HttpResponse.json({ orders: [{ ...order }], total_count: 1 })),
-      http.put(`${BASE}/api/orders/:id/tracking`, () => HttpResponse.json({ message: 'Carrier code is unknown', status: 400 }, { status: 400 })),
+      http.put(`${BASE}/api/orders/:id/tracking`, () => HttpResponse.json({ message: "Invalid value for field 'carrierCode'", status: 400 }, { status: 400 })),
     );
-    await expect(new EmpikAdapter(creds).pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', trackingNumber: '1' })).rejects.toThrow(
-      /OR23.*paczkomatyinpost.*Empik \(HTTP 400\): Carrier code is unknown/,
-    );
+    await expect(new EmpikAdapter(creds).pushTracking(ref, locker)).rejects.toThrow(/OR23.*paczkomatyinpost.*Empik \(HTTP 400\): Invalid value/);
   });
 
   it('accepts every order line (OR21)', async () => {
