@@ -57,6 +57,47 @@ export function exchangeAllegroCode(creds: AllegroCredentials, code: string, red
   return tokenRequest(creds, { grant_type: 'authorization_code', code, redirect_uri: redirectUri });
 }
 
+interface AllegroErrorItem {
+  code?: string | null;
+  message?: string | null;
+  userMessage?: string | null;
+  path?: string | null;
+  details?: string | null;
+}
+
+/** Formats Allegro's error list as "receiver.phone: Niepoprawny numer telefonu; …". */
+export function describeAllegroErrors(errors: AllegroErrorItem[] | undefined): string | null {
+  if (!errors?.length) return null;
+  return errors
+    .map((e) => {
+      const text = e.userMessage || e.message || e.details || e.code || 'error';
+      return e.path ? `${e.path}: ${text}` : text;
+    })
+    .join('; ');
+}
+
+/** An Allegro API error with the reasons Allegro gave, readable for staff. */
+export class AllegroApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AllegroApiError';
+  }
+}
+
+function toAllegroError(err: unknown): unknown {
+  if (!(err instanceof HttpError)) return err;
+  try {
+    const described = describeAllegroErrors((JSON.parse(err.body) as { errors?: AllegroErrorItem[] }).errors);
+    if (described) return new AllegroApiError(err.status, `Allegro (HTTP ${err.status}): ${described}`);
+  } catch {
+    // Not JSON: keep the original error.
+  }
+  return err;
+}
+
 export class AllegroClient {
   constructor(private readonly creds: CredentialsStore<AllegroCredentials>) {}
 
@@ -97,7 +138,7 @@ export class AllegroClient {
           await this.accessToken(true);
           continue;
         }
-        throw err;
+        throw toAllegroError(err);
       }
     }
   }
@@ -105,15 +146,19 @@ export class AllegroClient {
   /** Like `call` but also returns response headers (for Retry-After on async commands). */
   async callWithHeaders<T>(method: string, path: string, options: Omit<RequestOptions, 'method'> = {}) {
     const token = await this.accessToken();
-    return request<T>(`${this.apiBase}${path}`, {
-      ...options,
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: MEDIA_TYPE,
-        ...(options.body !== undefined ? { 'Content-Type': MEDIA_TYPE } : {}),
-        ...options.headers,
-      },
-    });
+    try {
+      return await request<T>(`${this.apiBase}${path}`, {
+        ...options,
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: MEDIA_TYPE,
+          ...(options.body !== undefined ? { 'Content-Type': MEDIA_TYPE } : {}),
+          ...options.headers,
+        },
+      });
+    } catch (err) {
+      throw toAllegroError(err);
+    }
   }
 }

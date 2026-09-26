@@ -37,20 +37,20 @@ export async function seed(admin: { email?: string; password?: string } = {}): P
   const created = await db
     .insert(marketplaceAccounts)
     .values([
-      { type: 'shopify', name: 'Shopify (demo)', stockSyncEnabled: true },
-      { type: 'allegro', name: 'Allegro (demo)', stockSyncEnabled: true },
-      { type: 'empik', name: 'Empik (demo)', stockSyncEnabled: true, settings: { autoAccept: false } },
+      { type: 'shopify', name: 'Shopify (demo)', stockSyncEnabled: true, settings: { demo: true } },
+      { type: 'allegro', name: 'Allegro (demo)', stockSyncEnabled: true, settings: { demo: true } },
+      { type: 'empik', name: 'Empik (demo)', stockSyncEnabled: true, settings: { demo: true, autoAccept: false } },
     ])
     .returning({ id: marketplaceAccounts.id });
   const allegro = created[1];
   await db.insert(carrierAccounts).values([
-    { type: 'inpost', name: 'InPost (demo)', sender: DEMO_SENDER, settings: { labelFormat: 'pdf', labelSize: 'A6' } },
+    { type: 'inpost', name: 'InPost (demo)', sender: DEMO_SENDER, settings: { demo: true, labelFormat: 'pdf', labelSize: 'A6' } },
     {
       type: 'allegro_shipping',
       name: 'Allegro Delivery (demo)',
       marketplaceAccountId: allegro.id,
       sender: DEMO_SENDER,
-      settings: { labelFormat: 'pdf', labelSize: 'A6', codIban: 'PL61109010140000071219812874', codOwnerName: 'Luora sp. z o.o.' },
+      settings: { demo: true, labelFormat: 'pdf', labelSize: 'A6' },
     },
   ]);
   const rules = await db.select({ id: shippingRules.id }).from(shippingRules).limit(1);

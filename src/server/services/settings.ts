@@ -1,10 +1,14 @@
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, inArray, sql } from 'drizzle-orm';
+import { getCfEnv } from '../cf';
 import { encryptJson, hashPassword } from '../crypto';
-import { getDb } from '../db/client';
+import { chunk, getDb } from '../db/client';
 import {
   carrierAccounts,
+  labelFiles,
   marketplaceAccounts,
+  orders,
   packagePresets,
+  shipments,
   shippingRules,
   users,
   type CarrierSettings,
@@ -13,7 +17,8 @@ import {
 } from '../db/schema';
 import type { SenderSettings } from '../integrations/types';
 import { BUYER_CHOICE } from '../integrations/carriers/allegro-shipping/adapter';
-import { getCarrierAdapter, getMarketplaceAdapter, loadCarrierAccount, loadMarketplaceAccount, readCredentials } from './accounts';
+import { MOCK_CATALOG } from '../integrations/marketplaces/mock/adapter';
+import { getCarrierAdapter, getMarketplaceAdapter, loadCarrierAccount, loadMarketplaceAccount, readCredentials, withConfigured } from './accounts';
 
 export const DEFAULT_PRESETS = [
   { name: 'Paczkomat A (small)', lengthCm: 64, widthCm: 38, heightCm: 8, weightKg: '5', inpostTemplate: 'small', isDefault: false },
@@ -29,22 +34,25 @@ export async function ensureDefaultPresets(): Promise<void> {
 }
 
 /**
- * The routing described in the plan: Allegro orders use Allegro Delivery with the
- * buyer's method, orders with a pickup point go to an InPost locker, the rest by InPost courier.
+ * Default routing: Allegro orders use the Allegro Delivery account linked to the
+ * same Allegro account (buyer's method), orders with a pickup point go to an InPost
+ * locker, the rest by InPost courier. Only carriers with working credentials are used.
  */
 export async function createDefaultRules(): Promise<number> {
   const db = getDb();
   await ensureDefaultPresets();
-  const carriers = await db.select().from(carrierAccounts).orderBy(asc(carrierAccounts.createdAt));
+  const carriers = (await withConfigured(await db.select().from(carrierAccounts).orderBy(asc(carrierAccounts.createdAt)))).filter(
+    (c) => c.enabled && c.configured,
+  );
   const presets = await db.select().from(packagePresets);
   const inpost = carriers.find((c) => c.type === 'inpost');
-  const allegro = carriers.find((c) => c.type === 'allegro_shipping');
   const lockerPreset = presets.find((p) => p.inpostTemplate === 'small' && !p.isDefault) ?? presets[0];
   const defaultPreset = presets.find((p) => p.isDefault) ?? presets[0];
 
   const rules: (typeof shippingRules.$inferInsert)[] = [];
-  if (allegro) {
-    rules.push({ name: 'Allegro orders → Allegro Delivery', priority: 10, conditions: { marketplaces: ['allegro'] }, carrierAccountId: allegro.id, service: BUYER_CHOICE, packagePresetId: defaultPreset?.id });
+  // Routing matches each one to orders from its own Allegro account.
+  for (const allegro of carriers.filter((c) => c.type === 'allegro_shipping')) {
+    rules.push({ name: `Allegro orders → ${allegro.name}`, priority: 10, conditions: { marketplaces: ['allegro'] }, carrierAccountId: allegro.id, service: BUYER_CHOICE, packagePresetId: defaultPreset?.id });
   }
   if (inpost) {
     rules.push({ name: 'Pickup point → InPost Paczkomat', priority: 20, conditions: { hasPickupPoint: true }, carrierAccountId: inpost.id, service: 'inpost_locker_standard', packagePresetId: lockerPreset?.id });
@@ -52,6 +60,59 @@ export async function createDefaultRules(): Promise<number> {
   }
   if (rules.length) await db.insert(shippingRules).values(rules);
   return rules.length;
+}
+
+// ---------------------------------------------------------------- demo data
+
+const isDemo = (a: { name: string; settings: { demo?: boolean } }) => a.settings.demo === true || a.name.endsWith('(demo)');
+
+export async function demoAccountCount(): Promise<number> {
+  const db = getDb();
+  const [markets, carriers] = await Promise.all([db.select().from(marketplaceAccounts), db.select().from(carrierAccounts)]);
+  return markets.filter(isDemo).length + carriers.filter(isDemo).length;
+}
+
+/**
+ * Deletes the accounts created by the demo-mode seed with everything hanging off them:
+ * orders (with items, events, shipments and label files in R2), listings, carriers
+ * and their shipping rules, and demo products nothing else uses.
+ */
+export async function removeDemoData(): Promise<{ accounts: number; carriers: number; orders: number }> {
+  const db = getDb();
+  const markets = (await db.select().from(marketplaceAccounts)).filter(isDemo);
+  const carriers = (await db.select().from(carrierAccounts)).filter(isDemo);
+  const marketIds = markets.map((m) => m.id);
+  const carrierIds = carriers.map((c) => c.id);
+
+  const affected = [];
+  for (const ids of chunk(marketIds)) {
+    affected.push(...(await db.select({ id: orders.id }).from(orders).where(inArray(orders.accountId, ids))));
+  }
+  const orderIds = affected.map((o) => o.id);
+
+  // Shipments of demo orders or bought through demo carriers, and their label files.
+  const shipmentRows = [];
+  for (const ids of chunk(orderIds)) shipmentRows.push(...(await db.select({ id: shipments.id }).from(shipments).where(inArray(shipments.orderId, ids))));
+  for (const ids of chunk(carrierIds)) shipmentRows.push(...(await db.select({ id: shipments.id }).from(shipments).where(inArray(shipments.carrierAccountId, ids))));
+  const shipmentIds = [...new Set(shipmentRows.map((s) => s.id))];
+  for (const ids of chunk(shipmentIds)) {
+    const files = await db.select({ key: labelFiles.r2Key }).from(labelFiles).where(inArray(labelFiles.shipmentId, ids));
+    if (files.length) await getCfEnv().LABELS.delete(files.map((f) => f.key));
+    await db.delete(shipments).where(inArray(shipments.id, ids));
+  }
+
+  // Carriers first (their rules cascade), then accounts (orders, items, events and listings cascade).
+  for (const ids of chunk(carrierIds)) await db.delete(carrierAccounts).where(inArray(carrierAccounts.id, ids));
+  for (const ids of chunk(marketIds)) await db.delete(marketplaceAccounts).where(inArray(marketplaceAccounts.id, ids));
+
+  // Demo products that no longer have listings or order lines.
+  const demoSkus = MOCK_CATALOG.map((p) => p.sku);
+  await db.run(sql`
+    delete from products where sku in (${sql.join(demoSkus.map((s) => sql`${s}`), sql`, `)})
+      and not exists (select 1 from product_listings l where l.product_id = products.id)
+      and not exists (select 1 from order_items i where i.product_id = products.id)`);
+
+  return { accounts: markets.length, carriers: carriers.length, orders: orderIds.length };
 }
 
 // ---------------------------------------------------------------- marketplace accounts

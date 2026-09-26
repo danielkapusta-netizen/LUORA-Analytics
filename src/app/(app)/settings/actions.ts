@@ -14,6 +14,7 @@ import {
   deletePreset,
   deleteRule,
   deleteUser,
+  removeDemoData,
   resetPassword,
   saveCarrierAccount,
   saveMarketplaceAccount,
@@ -115,6 +116,17 @@ export async function importListingsAction(id: string): Promise<ActionResult> {
   return attempt(async () => {
     await enqueue(JOBS.listingsImport, { accountId: id }, { singletonKey: id });
     return 'Listing import queued; see the Inventory page';
+  });
+}
+
+export async function removeDemoDataAction(): Promise<ActionResult> {
+  await requireAdmin();
+  return attempt(async () => {
+    const removed = await removeDemoData();
+    revalidatePath('/settings/integrations');
+    revalidatePath('/settings/shipping');
+    revalidatePath('/orders');
+    return `Removed ${removed.accounts} demo marketplace account(s), ${removed.carriers} demo carrier(s) and ${removed.orders} demo order(s). Next: check your real carriers and add shipping rules.`;
   });
 }
 

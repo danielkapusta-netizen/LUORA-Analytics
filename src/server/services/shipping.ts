@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
 import { getCfEnv } from '../cf';
 import { chunk, getDb } from '../db/client';
@@ -20,7 +20,7 @@ import {
 import type { CarrierService, ShipmentStatus } from '../integrations/carriers/types';
 import type { LabelFormat, LabelSize, ParcelSpec } from '../integrations/types';
 import { enqueue, JOBS } from '../jobs/queue';
-import { getCarrierAdapter, loadCarrierAccount } from './accounts';
+import { getCarrierAdapter, loadCarrierAccount, withConfigured } from './accounts';
 import { logEvent } from './events';
 import { loadOrder } from './orders';
 import { carrierSupportsOrder, chooseRoute, type RouteDecision } from './routing';
@@ -45,7 +45,7 @@ export async function loadRoutingData() {
   const db = getDb();
   const [rules, carriers, presets] = await Promise.all([
     db.select().from(shippingRules).orderBy(asc(shippingRules.priority)),
-    db.select().from(carrierAccounts).orderBy(asc(carrierAccounts.name)),
+    db.select().from(carrierAccounts).orderBy(asc(carrierAccounts.name)).then(withConfigured),
     db.select().from(packagePresets).orderBy(asc(packagePresets.name)),
   ]);
   return { rules, carriers, presets };
@@ -100,9 +100,12 @@ export async function requestShipment(input: ShipmentInput, userId: string | nul
   if (order.status === 'shipped' || order.status === 'delivered') throw new ShippingError(`Order ${order.externalNumber} is already shipped`);
   if (!order.readyToShip) throw new ShippingError(`Order ${order.externalNumber} is not ready to ship on ${order.marketplace} (${order.marketplaceStatus})`);
 
-  const carrier = await loadCarrierAccount(input.carrierAccountId);
+  const [carrier] = await withConfigured([await loadCarrierAccount(input.carrierAccountId)]);
   if (!carrier.enabled) throw new ShippingError(`${carrier.name} is disabled`);
-  if (!carrierSupportsOrder(carrier, order)) throw new ShippingError(`${carrier.name} can only ship Allegro orders`);
+  if (!carrier.configured) throw new ShippingError(`${carrier.name} has no working credentials. Check it in Settings → Integrations.`);
+  if (!carrierSupportsOrder(carrier, order)) {
+    throw new ShippingError(`${carrier.name} can only ship orders from its own Allegro account`);
+  }
   if (!carrier.sender) throw new ShippingError(`${carrier.name} has no sender address. Add it in Settings → Integrations.`);
 
   let id: string;
@@ -186,14 +189,40 @@ export async function runCreateShipment(shipmentId: string): Promise<void> {
   await applyStatus(shipment, carrier, status);
 }
 
-/** Job: checks on a shipment the carrier is still creating. */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Job: checks on a shipment the carrier is still creating, or retries the label
+ * download for one that is created but has no file yet. Errors are saved on the
+ * shipment so staff can see them, instead of disappearing inside the queue.
+ */
 export async function runPollShipment(shipmentId: string): Promise<void> {
   const row = await findShipment(shipmentId);
-  if (!row || row.shipment.state !== 'pending') return;
+  if (!row) return;
   const { shipment, carrier } = row;
-  const adapter = await getCarrierAdapter(carrier);
-  const status = await adapter.refreshShipment({ externalId: shipment.externalId, commandId: shipment.commandId });
-  await applyStatus(shipment, carrier, status);
+  if (shipment.state === 'created') {
+    if (!(await getLabelRow(shipment.id))) await downloadLabel(shipment, carrier);
+    return;
+  }
+  if (shipment.state !== 'pending') return;
+  try {
+    const adapter = await getCarrierAdapter(carrier);
+    const status = await adapter.refreshShipment({ externalId: shipment.externalId, commandId: shipment.commandId });
+    await applyStatus(shipment, carrier, status);
+  } catch (err) {
+    await recordPollError(shipment, errorText(err));
+  }
+}
+
+async function recordPollError(shipment: Shipment, message: string): Promise<void> {
+  const db = getDb();
+  const attempts = shipment.pollAttempts + 1;
+  if (attempts > MAX_POLLS) return failShipment(shipment, message);
+  await db.update(shipments).set({ error: message, pollAttempts: attempts }).where(eq(shipments.id, shipment.id));
+  if (message !== shipment.error) await logEvent(db, shipment.orderId, 'error', `Label check failed: ${message}`);
+  await enqueue(JOBS.shipmentPoll, { shipmentId: shipment.id }, { startAfterSeconds: Math.min(300, 15 * attempts) });
 }
 
 async function applyStatus(shipment: Shipment, carrier: CarrierAccount, status: ShipmentStatus): Promise<void> {
@@ -212,23 +241,16 @@ async function applyStatus(shipment: Shipment, carrier: CarrierAccount, status: 
       .update(shipments)
       .set({ externalId: status.externalId || shipment.externalId, commandId: status.commandId ?? shipment.commandId, pollAttempts: attempts })
       .where(eq(shipments.id, shipment.id));
-    if (attempts > MAX_POLLS) return failShipment(shipment, 'The carrier did not confirm the shipment in time');
+    if (attempts > MAX_POLLS) {
+      return failShipment(shipment, shipment.error ?? 'The carrier did not confirm the shipment in time');
+    }
     await enqueue(JOBS.shipmentPoll, { shipmentId: shipment.id }, { startAfterSeconds: Math.max(1, Math.ceil(status.retryAfterSeconds ?? 3)) });
     return;
   }
 
-  // Created: download the label while we are here, so printing never waits on the carrier.
-  const adapter = await getCarrierAdapter(carrier);
-  const label = await adapter.getLabels([status.externalId], { format: shipment.labelFormat, size: shipment.labelSize });
-  // Store the file first; the D1 rows are only written once it is safely in R2.
-  const r2Key = `labels/${shipment.id}.${shipment.labelFormat}`;
-  await getCfEnv().LABELS.put(r2Key, label, {
-    httpMetadata: { contentType: shipment.labelFormat === 'pdf' ? 'application/pdf' : 'application/octet-stream' },
-  });
-  {
-    const tx = db;
-    await tx.batch([
-      tx
+  // Created: record the tracking number first, so a label-download problem never blocks the tracking push.
+  await db.batch([
+    db
       .update(shipments)
       .set({
         state: 'created',
@@ -240,15 +262,40 @@ async function applyStatus(shipment: Shipment, carrier: CarrierAccount, status: 
         error: null,
       })
       .where(eq(shipments.id, shipment.id)),
-      tx
+    db.insert(orderEvents).values({ orderId: shipment.orderId, type: 'label', message: `Label created: ${carrier.name}, tracking ${status.trackingNumber ?? '—'}` }),
+  ]);
+  await changeStatus(db, shipment.orderId, 'label_created', { reason: 'label created', force: true });
+  await enqueue(JOBS.trackingPush, { shipmentId: shipment.id });
+  await downloadLabel({ ...shipment, externalId: status.externalId }, carrier);
+}
+
+async function getLabelRow(shipmentId: string) {
+  const [row] = await getDb().select().from(labelFiles).where(eq(labelFiles.shipmentId, shipmentId));
+  return row ?? null;
+}
+
+/** Fetches the label from the carrier into R2. Failures are saved on the shipment and retried by "Check now" or the sweep. */
+async function downloadLabel(shipment: Shipment, carrier: CarrierAccount): Promise<void> {
+  const db = getDb();
+  try {
+    const adapter = await getCarrierAdapter(carrier);
+    const label = await adapter.getLabels([shipment.externalId!], { format: shipment.labelFormat, size: shipment.labelSize });
+    const r2Key = `labels/${shipment.id}.${shipment.labelFormat}`;
+    await getCfEnv().LABELS.put(r2Key, label, {
+      httpMetadata: { contentType: shipment.labelFormat === 'pdf' ? 'application/pdf' : 'application/octet-stream' },
+    });
+    await db.batch([
+      db
         .insert(labelFiles)
         .values({ shipmentId: shipment.id, format: shipment.labelFormat, size: shipment.labelSize, r2Key })
         .onConflictDoUpdate({ target: labelFiles.shipmentId, set: { r2Key } }),
-      tx.insert(orderEvents).values({ orderId: shipment.orderId, type: 'label', message: `Label created: ${carrier.name}, tracking ${status.trackingNumber ?? '—'}` }),
+      db.update(shipments).set({ error: null }).where(eq(shipments.id, shipment.id)),
     ]);
-    await changeStatus(tx, shipment.orderId, 'label_created', { reason: 'label created', force: true });
+  } catch (err) {
+    const message = `Label not downloaded yet: ${errorText(err)}`;
+    await db.update(shipments).set({ error: message }).where(eq(shipments.id, shipment.id));
+    if (message !== shipment.error) await logEvent(db, shipment.orderId, 'error', message);
   }
-  await enqueue(JOBS.trackingPush, { shipmentId: shipment.id });
 }
 
 /**
@@ -261,7 +308,13 @@ export async function runPendingSweep(): Promise<{ polled: number; failed: numbe
     .select()
     .from(shipments)
     .where(and(eq(shipments.state, 'pending'), lt(shipments.updatedAt, new Date(Date.now() - 2 * 60_000))));
-  let polled = 0;
+  // Created labels whose file never arrived: retry the download.
+  const missingFile = await db.all<{ id: string }>(sql`
+    select s.id from shipments s left join label_files l on l.shipment_id = s.id
+    where s.state = 'created' and l.shipment_id is null
+      and s.updated_at < ${Date.now() - 2 * 60_000} and s.created_at > ${Date.now() - 24 * 3600_000}`);
+  for (const { id } of missingFile) await enqueue(JOBS.shipmentPoll, { shipmentId: id });
+  let polled = missingFile.length;
   let failed = 0;
   for (const shipment of stale) {
     if (shipment.externalId || shipment.commandId) {
@@ -372,7 +425,7 @@ export async function createBatch(orderIds: string[], userId: string): Promise<s
   for (const order of selected) {
     const route = routeOrder(order, data);
     if (!route) {
-      skipped.push({ orderId: order.id, reason: 'No shipping rule matches this order' });
+      skipped.push({ orderId: order.id, reason: 'No shipping rule with a working carrier matches this order' });
       continue;
     }
     const preset = data.presets.find((p) => p.id === route.packagePresetId) ?? data.presets.find((p) => p.isDefault) ?? data.presets[0];

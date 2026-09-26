@@ -157,6 +157,7 @@ export default async function ShippingSettingsPage() {
                     <Badge>{r.priority}</Badge>
                     <span className="font-medium">{r.name}</span>
                     {!r.enabled && <Badge tone="gray">disabled</Badge>}
+                    {!carriers.find((c) => c.id === r.carrierAccountId)?.configured && <Badge tone="red">carrier not configured, rule skipped</Badge>}
                     <span className="text-slate-500">
                       if {describeConditions(r.conditions)} → {carrierName(r.carrierAccountId)}, {SERVICE_LABELS[r.service] ?? r.service}
                     </span>

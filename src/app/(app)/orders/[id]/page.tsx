@@ -120,7 +120,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                           <ExternalLink className="size-3.5" /> Track
                         </a>
                       )}
-                      {s.state === 'pending' && (
+                      {(s.state === 'pending' || (s.state === 'created' && s.error)) && (
                         <ActionForm action={pollShipmentAction.bind(null, order.id, s.id)} showOk={false}>
                           <SubmitButton size="sm" variant="secondary">
                             Check now

@@ -80,3 +80,17 @@ export async function loadCarrierAccount(id: string): Promise<CarrierAccount> {
   if (!account) throw new Error(`Carrier account ${id} not found`);
   return account;
 }
+
+/** Adds `configured`: whether the carrier has what it needs to buy labels (always true in demo mode). */
+export async function withConfigured<T extends CarrierAccount>(carriers: T[]): Promise<(T & { configured: boolean })[]> {
+  if (isMockMode()) return carriers.map((c) => ({ ...c, configured: true }));
+  const allegro = await getDb().select().from(marketplaceAccounts).where(eq(marketplaceAccounts.type, 'allegro'));
+  const connected = new Set(allegro.filter((a) => readCredentials<AllegroCredentials>(a.credentials)?.refreshToken).map((a) => a.id));
+  return carriers.map((c) => {
+    if (c.type === 'inpost') {
+      const creds = readCredentials<InpostCredentials>(c.credentials);
+      return { ...c, configured: Boolean(creds?.apiToken && creds.organizationId) };
+    }
+    return { ...c, configured: Boolean(c.marketplaceAccountId && connected.has(c.marketplaceAccountId)) };
+  });
+}

@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { AllegroShippingAdapter, buildCreateCommand } from '@/server/integrations/carriers/allegro-shipping/adapter';
+import { allegroPhone, AllegroShippingAdapter, buildCreateCommand } from '@/server/integrations/carriers/allegro-shipping/adapter';
 import { buildShipxPayload, InpostAdapter } from '@/server/integrations/carriers/inpost/adapter';
 import type { ShipmentRequest } from '@/server/integrations/carriers/types';
 import { AllegroClient, type AllegroCredentials } from '@/server/integrations/marketplaces/allegro/client';
@@ -105,18 +105,80 @@ describe('Allegro Delivery (Wysyłam z Allegro)', () => {
   const creds: AllegroCredentials = { clientId: 'c', clientSecret: 's', sandbox: true, accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 3600_000).toISOString() };
   const adapter = new AllegroShippingAdapter(new AllegroClient({ get: () => creds, save: async () => {} }), { codIban: 'PL61109010140000071219812874', codOwnerName: 'Luora' });
 
+  const services = (forceRequireIban: boolean) =>
+    http.get(`${API}/shipment-management/delivery-services`, () =>
+      HttpResponse.json({
+        services: [
+          {
+            id: { deliveryMethodId: '2488f7b7-5d1c-4d65-b85c-4cbcf253fd93' },
+            name: 'Allegro Paczkomaty InPost pobranie',
+            cashOnDelivery: { limit: 5000, currency: 'PLN', paymentType: 'MONEY_TRANSFER', forceRequireIban },
+          },
+        ],
+      }),
+    );
+
   it('uses the buyer’s delivery method and our shipment id as the command id', () => {
-    const cmd = buildCreateCommand({ ...request, service: 'buyer_choice', codAmount: '50.00' }, { codIban: 'PL1', codOwnerName: 'Luora' }, request.shipmentId);
+    const cmd = buildCreateCommand({ ...request, service: 'buyer_choice' }, {}, request.shipmentId);
     expect(cmd.commandId).toBe(request.shipmentId);
     expect(cmd.input.deliveryMethodId).toBe('2488f7b7-5d1c-4d65-b85c-4cbcf253fd93');
     expect(cmd.input.receiver.point).toBe('KRA010');
     expect(cmd.input.packages[0]).toMatchObject({ type: 'PACKAGE', length: { value: 30, unit: 'CENTIMETER' }, weight: { value: 1.5, unit: 'KILOGRAMS' } });
-    expect(cmd.input.cashOnDelivery).toEqual({ amount: '50.00', currency: 'PLN', ownerName: 'Luora', iban: 'PL1' });
   });
 
-  it('refuses COD without an IBAN', async () => {
+  it('normalises phone numbers, keeping a foreign prefix (Hungary)', () => {
+    const hu = { ...request.receiver, countryCode: 'hu', postalCode: ' 1051 ', phone: '+36 30 123 4567' };
+    const cmd = buildCreateCommand({ ...request, service: 'buyer_choice', receiver: hu }, {}, request.shipmentId);
+    expect(cmd.input.receiver).toMatchObject({ phone: '+36301234567', countryCode: 'HU', postalCode: '1051' });
+    expect(cmd.input.sender.phone).toBe('+48500600700');
+    expect(allegroPhone('0036 30 123 4567')).toBe('+36301234567');
+    expect(allegroPhone('600-700-800')).toBe('600700800');
+  });
+
+  it('sends COD without an IBAN when the money goes to the Allegro balance', async () => {
+    let body: { input: { cashOnDelivery?: Record<string, unknown> } } | undefined;
+    server.use(
+      services(false),
+      http.post(`${API}/shipment-management/shipments/create-commands`, async ({ request: req }) => {
+        body = (await req.json()) as typeof body;
+        return HttpResponse.json(body, { status: 201 });
+      }),
+    );
     const noIban = new AllegroShippingAdapter(new AllegroClient({ get: () => creds, save: async () => {} }), {});
-    expect((await noIban.createShipment({ ...request, service: 'buyer_choice', codAmount: '10.00' })).state).toBe('failed');
+    expect((await noIban.createShipment({ ...request, service: 'buyer_choice', codAmount: '99.90' })).state).toBe('pending');
+    expect(body?.input.cashOnDelivery).toEqual({ amount: '99.90', currency: 'PLN' });
+  });
+
+  it('adds the IBAN only when the delivery service requires it', async () => {
+    let body: { input: { cashOnDelivery?: Record<string, unknown> } } | undefined;
+    server.use(
+      services(true),
+      http.post(`${API}/shipment-management/shipments/create-commands`, async ({ request: req }) => {
+        body = (await req.json()) as typeof body;
+        return HttpResponse.json(body, { status: 201 });
+      }),
+    );
+    await adapter.createShipment({ ...request, service: 'buyer_choice', codAmount: '50.00' });
+    expect(body?.input.cashOnDelivery).toEqual({ amount: '50.00', currency: 'PLN', ownerName: 'Luora', iban: 'PL61109010140000071219812874' });
+
+    const noIban = new AllegroShippingAdapter(new AllegroClient({ get: () => creds, save: async () => {} }), {});
+    const failed = await noIban.createShipment({ ...request, service: 'buyer_choice', codAmount: '10.00' });
+    expect(failed.state).toBe('failed');
+    expect(failed.error).toMatch(/IBAN/);
+  });
+
+  it('turns an Allegro validation error into a readable message', async () => {
+    server.use(
+      http.post(`${API}/shipment-management/shipments/create-commands`, () =>
+        HttpResponse.json(
+          { errors: [{ code: 'VALIDATION_ERROR', message: 'Niepoprawny numer telefonu', path: 'receiver.phone', userMessage: null }] },
+          { status: 422 },
+        ),
+      ),
+    );
+    await expect(adapter.createShipment({ ...request, service: 'buyer_choice' })).rejects.toThrow(
+      'Allegro (HTTP 422): receiver.phone: Niepoprawny numer telefonu',
+    );
   });
 
   it('creates asynchronously, then reads the waybill', async () => {
@@ -152,9 +214,12 @@ describe('Allegro Delivery (Wysyłam z Allegro)', () => {
   it('reports command errors', async () => {
     server.use(
       http.get(`${API}/shipment-management/shipments/create-commands/:id`, ({ params }) =>
-        HttpResponse.json({ commandId: params.id, status: 'ERROR', errors: [{ code: 'X', userMessage: 'Wrong postal code' }] }),
+        HttpResponse.json({ commandId: params.id, status: 'ERROR', errors: [{ code: 'X', message: 'Kod pocztowy odbiorcy jest niedostępny', path: 'receiver.postalCode', userMessage: null }] }),
       ),
     );
-    expect(await adapter.refreshShipment({ externalId: null, commandId: 'c1' })).toMatchObject({ state: 'failed', error: 'Wrong postal code' });
+    expect(await adapter.refreshShipment({ externalId: null, commandId: 'c1' })).toMatchObject({
+      state: 'failed',
+      error: 'receiver.postalCode: Kod pocztowy odbiorcy jest niedostępny',
+    });
   });
 });

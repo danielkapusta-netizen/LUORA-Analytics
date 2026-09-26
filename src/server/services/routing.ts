@@ -4,6 +4,7 @@ import type { RuleConditions } from '../db/schema';
 import type { Marketplace } from '../integrations/types';
 
 export interface RoutableOrder {
+  accountId: string;
   marketplace: Marketplace;
   deliveryMethodName: string | null;
   pickupPointId: string | null;
@@ -25,6 +26,10 @@ export interface CarrierLike {
   id: string;
   type: 'inpost' | 'allegro_shipping';
   enabled: boolean;
+  /** Has working credentials (always true in demo mode). */
+  configured: boolean;
+  /** Allegro Delivery: the Allegro account whose connection it uses. */
+  marketplaceAccountId: string | null;
 }
 
 export interface RouteDecision {
@@ -46,9 +51,14 @@ export function matchesRule(order: RoutableOrder, conditions: RuleConditions): b
   return true;
 }
 
-/** Allegro Delivery can only ship orders that were bought on Allegro. */
+/**
+ * A carrier can ship an order when it has credentials and, for Allegro Delivery,
+ * when it uses the same Allegro account the order was bought on.
+ */
 export function carrierSupportsOrder(carrier: CarrierLike, order: RoutableOrder): boolean {
-  return carrier.type !== 'allegro_shipping' || order.marketplace === 'allegro';
+  if (!carrier.configured) return false;
+  if (carrier.type === 'allegro_shipping') return order.marketplace === 'allegro' && carrier.marketplaceAccountId === order.accountId;
+  return true;
 }
 
 export function chooseRoute(order: RoutableOrder, rules: RuleLike[], carriers: CarrierLike[]): RouteDecision | null {

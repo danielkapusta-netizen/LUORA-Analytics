@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CarrierSettings } from '../../../db/schema';
 import { parseRetryAfter } from '../../../http';
-import type { AllegroClient } from '../../marketplaces/allegro/client';
+import { describeAllegroErrors, type AllegroClient } from '../../marketplaces/allegro/client';
 import type { LabelFormat, LabelSize } from '../../types';
 import { inpostTrackingUrl, type CarrierAdapter, type CarrierService, type DeliveryStatus, type ShipmentRequest, type ShipmentStatus } from '../types';
 
@@ -13,7 +13,7 @@ export const BUYER_CHOICE = 'buyer_choice';
 interface CreateCommandStatus {
   commandId: string;
   status: 'IN_PROGRESS' | 'SUCCESS' | 'ERROR';
-  errors?: { code?: string; message?: string; userMessage?: string }[];
+  errors?: { code?: string; message?: string; userMessage?: string; path?: string }[];
   shipmentId?: string | null;
 }
 
@@ -23,20 +23,39 @@ interface AllegroShipment {
   packages: { waybill?: string | null; transportingInfo?: { carrierId?: string; carrierWaybill?: string }[] }[];
 }
 
+interface DeliveryService {
+  id: { deliveryMethodId: string; credentialsId?: string | null };
+  name: string;
+  cashOnDelivery?: { forceRequireIban?: boolean | null } | null;
+}
+
+/** Allegro wants 9–14 digits; keep a leading + so foreign numbers (e.g. +36 for Hungary) keep their prefix. */
+export function allegroPhone(phone: string | null | undefined): string | undefined {
+  if (!phone) return undefined;
+  const trimmed = phone.trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return undefined;
+  return trimmed.startsWith('+') || trimmed.startsWith('00') ? `+${digits.replace(/^00/, '')}` : digits;
+}
+
 function contact(a: { name: string; company?: string | null; street: string; postalCode: string; city: string; countryCode: string; email?: string | null; phone?: string | null }) {
   return {
-    name: a.name,
-    company: a.company || undefined,
-    street: a.street,
-    postalCode: a.postalCode,
-    city: a.city,
-    countryCode: a.countryCode,
-    email: a.email || undefined,
-    phone: a.phone || undefined,
+    name: a.name.trim(),
+    company: a.company?.trim() || undefined,
+    street: a.street.trim(),
+    postalCode: a.postalCode.trim(),
+    city: a.city.trim(),
+    countryCode: a.countryCode.trim().toUpperCase(),
+    email: a.email?.trim() || undefined,
+    phone: allegroPhone(a.phone),
   };
 }
 
-export function buildCreateCommand(req: ShipmentRequest, settings: CarrierSettings, commandId: string) {
+/**
+ * @param requireIban the delivery service's `cashOnDelivery.forceRequireIban`. When false, COD money
+ *   goes to the seller's Allegro balance and Allegro rejects an IBAN/owner, so neither is sent.
+ */
+export function buildCreateCommand(req: ShipmentRequest, settings: CarrierSettings, commandId: string, requireIban = false) {
   const deliveryMethodId = req.service === BUYER_CHOICE ? req.deliveryMethodId : req.service;
   if (!deliveryMethodId) throw new Error('The Allegro order has no delivery method to ship with');
   const dim = (value: number) => ({ value, unit: 'CENTIMETER' });
@@ -60,7 +79,11 @@ export function buildCreateCommand(req: ShipmentRequest, settings: CarrierSettin
       ],
       insurance: req.insuranceAmount ? { amount: req.insuranceAmount, currency: req.currency } : undefined,
       cashOnDelivery: req.codAmount
-        ? { amount: req.codAmount, currency: req.currency, ownerName: settings.codOwnerName, iban: settings.codIban }
+        ? {
+            amount: req.codAmount,
+            currency: req.currency,
+            ...(requireIban ? { ownerName: settings.codOwnerName, iban: settings.codIban?.replace(/\s/g, '') } : {}),
+          }
         : undefined,
       labelFormat: req.labelFormat === 'zpl' ? 'ZPL' : 'PDF',
     },
@@ -81,23 +104,36 @@ export class AllegroShippingAdapter implements CarrierAdapter {
     private readonly settings: CarrierSettings = {},
   ) {}
 
+  private deliveryServices?: Promise<DeliveryService[]>;
+
+  private loadDeliveryServices(): Promise<DeliveryService[]> {
+    this.deliveryServices ??= this.client
+      .call<{ services: DeliveryService[] }>('GET', '/shipment-management/delivery-services')
+      .then((d) => d.services);
+    return this.deliveryServices;
+  }
+
   async services(): Promise<CarrierService[]> {
-    const data = await this.client.call<{ services: { id: { deliveryMethodId: string }; name: string }[] }>(
-      'GET',
-      '/shipment-management/delivery-services',
-    );
-    return [
-      { id: BUYER_CHOICE, name: "Buyer's delivery method" },
-      ...data.services.map((s) => ({ id: s.id.deliveryMethodId, name: s.name })),
-    ];
+    const services = await this.loadDeliveryServices();
+    return [{ id: BUYER_CHOICE, name: "Buyer's delivery method" }, ...services.map((s) => ({ id: s.id.deliveryMethodId, name: s.name }))];
   }
 
   async createShipment(req: ShipmentRequest): Promise<ShipmentStatus> {
-    if (req.codAmount && !this.settings.codIban) {
-      return { state: 'failed', externalId: '', error: 'Cash on delivery needs a bank account (IBAN) in the Allegro Delivery settings' };
+    let requireIban = false;
+    if (req.codAmount) {
+      const methodId = req.service === BUYER_CHOICE ? req.deliveryMethodId : req.service;
+      const service = (await this.loadDeliveryServices()).find((s) => s.id.deliveryMethodId === methodId);
+      requireIban = Boolean(service?.cashOnDelivery?.forceRequireIban);
+      if (requireIban && !this.settings.codIban) {
+        return {
+          state: 'failed',
+          externalId: '',
+          error: `"${service?.name ?? 'This delivery service'}" pays cash on delivery by bank transfer: add the IBAN from your Allegro payout settings to the Allegro Delivery account`,
+        };
+      }
     }
     // Our shipment id doubles as the command id, so a retried request can't create a second shipment.
-    const body = buildCreateCommand(req, this.settings, req.shipmentId);
+    const body = buildCreateCommand(req, this.settings, req.shipmentId, requireIban);
     const response = await this.client.callWithHeaders('POST', '/shipment-management/shipments/create-commands', { body });
     return {
       state: 'pending',
@@ -117,7 +153,7 @@ export class AllegroShippingAdapter implements CarrierAdapter {
       );
       const command = response.data;
       if (command.status === 'ERROR') {
-        const error = command.errors?.map((e) => e.userMessage ?? e.message ?? e.code).join('; ') || 'Allegro rejected the shipment';
+        const error = describeAllegroErrors(command.errors) ?? 'Allegro rejected the shipment';
         return { state: 'failed', externalId: '', commandId: ref.commandId, error };
       }
       if (command.status !== 'SUCCESS' || !command.shipmentId) {

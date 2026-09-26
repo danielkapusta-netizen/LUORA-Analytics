@@ -54,6 +54,8 @@ export const sessions = sqliteTable('sessions', {
 // ---------------------------------------------------------------- accounts
 
 export interface MarketplaceSettings {
+  /** Created by the demo-mode seed; removable from Settings → Integrations. */
+  demo?: boolean;
   /** Days of history to import on the first sync. */
   initialSyncDays?: number;
   /** Shopify: note-attribute keys that may hold a parcel locker code. */
@@ -88,6 +90,8 @@ export const marketplaceAccounts = sqliteTable('marketplace_accounts', {
 });
 
 export interface CarrierSettings {
+  /** Created by the demo-mode seed; removable from Settings → Integrations. */
+  demo?: boolean;
   labelFormat?: 'pdf' | 'zpl';
   labelSize?: 'A4' | 'A6';
   /** InPost: "dispatch_order" (courier pickup) or "parcel_locker" (you drop parcels at a locker). */

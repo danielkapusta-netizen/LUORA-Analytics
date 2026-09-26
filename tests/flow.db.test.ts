@@ -55,7 +55,7 @@ describe('order flow (D1)', { timeout: 60_000 }, () => {
       analytics: await import('@/server/services/analytics'),
       handlers: await import('@/server/jobs/handlers'),
     };
-  });
+  }, 120_000);
 
   afterAll(async () => {
     (await import('@/server/jobs/queue')).setEnqueueImplementation(undefined);
@@ -186,5 +186,54 @@ describe('order flow (D1)', { timeout: 60_000 }, () => {
     expect(data.kpis.orders).toBeGreaterThan(30);
     expect(data.byMarketplace).toHaveLength(3);
     expect(data.carriers.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the tracking number when the label download fails, and fetches the file on "Check now"', async () => {
+    const { MockCarrierAdapter } = await import('@/server/integrations/carriers/mock/adapter');
+    const order = (await allOrders()).find((o) => o.marketplace === 'shopify' && o.status === 'new' && o.pickupPointId)!;
+    const form = await m.shipping.shippingFormData(order.id);
+    const original = MockCarrierAdapter.prototype.getLabels;
+    MockCarrierAdapter.prototype.getLabels = async () => {
+      throw new Error('label endpoint unavailable');
+    };
+    let id: string;
+    try {
+      id = await m.shipping.requestShipment(
+        { orderId: order.id, carrierAccountId: form.route!.carrierAccountId, service: form.route!.service, parcel: m.shipping.presetToParcel(form.defaultPreset!), options: {} },
+        null,
+      );
+      await drain(['tracking-push']);
+    } finally {
+      MockCarrierAdapter.prototype.getLabels = original;
+    }
+    const [shipment] = await m.db.getDb().select().from(m.schema.shipments).where(m.orm.eq(m.schema.shipments.id, id));
+    expect(shipment.state).toBe('created');
+    expect(shipment.trackingNumber).toBeTruthy();
+    expect(shipment.error).toMatch(/Label not downloaded yet: label endpoint unavailable/);
+    expect(await m.shipping.getLabel(id)).toBeNull();
+
+    queue.length = 0;
+    await m.shipping.pollNow(id);
+    await drain(['tracking-push']);
+    expect(await m.shipping.getLabel(id)).toMatchObject({ format: 'pdf' });
+    const [fixed] = await m.db.getDb().select().from(m.schema.shipments).where(m.orm.eq(m.schema.shipments.id, id));
+    expect(fixed.error).toBeNull();
+    queue.length = 0;
+  });
+
+  it('removes demo accounts with their orders, labels and rules', async () => {
+    const settings = await import('@/server/services/settings');
+    expect(await settings.demoAccountCount()).toBe(5);
+    const labelKeys = (await m.db.getDb().select().from(m.schema.labelFiles)).map((l) => l.r2Key);
+    expect(labelKeys.length).toBeGreaterThan(0);
+
+    const removed = await settings.removeDemoData();
+    expect(removed).toMatchObject({ accounts: 3, carriers: 2 });
+    expect(await settings.demoAccountCount()).toBe(0);
+    expect(await allOrders()).toHaveLength(0);
+    expect(await m.db.getDb().select().from(m.schema.shippingRules)).toHaveLength(0);
+    expect(await m.db.getDb().select().from(m.schema.products)).toHaveLength(0);
+    const { getCfEnv } = await import('@/server/cf');
+    for (const key of labelKeys) expect(await getCfEnv().LABELS.get(key)).toBeNull();
   });
 });

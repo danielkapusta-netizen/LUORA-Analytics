@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { chooseRoute, describeConditions, matchesRule, type CarrierLike, type RuleLike } from '@/server/services/routing';
 
 const carriers: CarrierLike[] = [
-  { id: 'inpost', type: 'inpost', enabled: true },
-  { id: 'allegro', type: 'allegro_shipping', enabled: true },
+  { id: 'inpost', type: 'inpost', enabled: true, configured: true, marketplaceAccountId: null },
+  { id: 'allegro', type: 'allegro_shipping', enabled: true, configured: true, marketplaceAccountId: 'allegro-main' },
 ];
 
 const rule = (r: Partial<RuleLike> & Pick<RuleLike, 'id' | 'carrierAccountId' | 'service'>): RuleLike => ({
@@ -22,6 +22,7 @@ const defaults = [
 ];
 
 const order = (o: Partial<Parameters<typeof chooseRoute>[0]> = {}) => ({
+  accountId: o.marketplace === 'allegro' ? 'allegro-main' : 'shop-1',
   marketplace: 'shopify' as const,
   deliveryMethodName: 'Kurier InPost',
   pickupPointId: null,
@@ -53,6 +54,20 @@ describe('chooseRoute', () => {
     expect(chooseRoute(order({ pickupPointId: 'KRA010' }), rules, carriers)?.ruleId).toBe('rest');
     const noInpost = carriers.map((c) => (c.id === 'inpost' ? { ...c, enabled: false } : c));
     expect(chooseRoute(order(), defaults, noInpost)).toBeNull();
+  });
+
+  it('skips carriers without working credentials (e.g. leftover demo accounts)', () => {
+    const demoInpost = carriers.map((c) => (c.id === 'inpost' ? { ...c, configured: false } : c));
+    expect(chooseRoute(order({ pickupPointId: 'KRA010' }), defaults, demoInpost)).toBeNull();
+    const backup = [...defaults, rule({ id: 'backup', priority: 99, carrierAccountId: 'inpost-real', service: 'inpost_courier_standard' })];
+    const withReal = [...demoInpost, { id: 'inpost-real', type: 'inpost' as const, enabled: true, configured: true, marketplaceAccountId: null }];
+    expect(chooseRoute(order({ pickupPointId: 'KRA010' }), backup, withReal)?.ruleId).toBe('backup');
+  });
+
+  it('uses Allegro Delivery only for orders from its own Allegro account', () => {
+    const other = order({ marketplace: 'allegro', pickupPointId: 'POZ08A' });
+    expect(chooseRoute({ ...other, accountId: 'allegro-second' }, defaults, carriers)?.ruleId).toBe('lockers');
+    expect(chooseRoute(other, defaults, carriers)?.ruleId).toBe('allegro-orders');
   });
 
   it('respects priority regardless of array order', () => {

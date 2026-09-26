@@ -6,20 +6,40 @@ import { Alert, Badge, buttonClass, Card, CardHeader, EmptyState } from '@/compo
 import { CARRIER_LABELS, timeAgo } from '@/lib/utils';
 import { requireUser } from '@/server/auth';
 import { env, isMockMode } from '@/server/env';
-import { listCarrierAccounts, listMarketplaceAccounts, storedCredentialKeys } from '@/server/services/settings';
-import { syncAccountAction, testCarrierAction, testMarketplaceAction } from '../actions';
+import { withConfigured } from '@/server/services/accounts';
+import { demoAccountCount, listCarrierAccounts, listMarketplaceAccounts, storedCredentialKeys } from '@/server/services/settings';
+import { removeDemoDataAction, syncAccountAction, testCarrierAction, testMarketplaceAction } from '../actions';
 
 export const metadata: Metadata = { title: 'Integrations' };
 
 export default async function IntegrationsPage({ searchParams }: { searchParams: Promise<{ message?: string }> }) {
   const user = await requireUser();
   const { message } = await searchParams;
-  const [marketplaces, carriers] = await Promise.all([listMarketplaceAccounts(), listCarrierAccounts()]);
+  const [marketplaces, carriers, demoCount] = await Promise.all([
+    listMarketplaceAccounts(),
+    listCarrierAccounts().then(withConfigured),
+    demoAccountCount(),
+  ]);
   const admin = user.role === 'admin';
 
   return (
     <div className="space-y-5">
       {message && <Alert tone="blue">{message}</Alert>}
+      {!isMockMode() && demoCount > 0 && admin && (
+        <Alert>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span>
+              {demoCount} demo account(s) from the first setup are still here. Their carriers can&apos;t buy real labels, and shipping rules
+              that point at them are skipped.
+            </span>
+            <ActionForm action={removeDemoDataAction}>
+              <SubmitButton size="sm" variant="danger" confirm="Delete all demo accounts, their orders, labels and shipping rules?">
+                Remove demo accounts
+              </SubmitButton>
+            </ActionForm>
+          </div>
+        </Alert>
+      )}
       {isMockMode() && (
         <Alert>
           Demo mode (<code>INTEGRATIONS_MODE=mock</code>): orders and labels are generated locally and nothing is sent to Shopify, Allegro,
@@ -130,6 +150,9 @@ export default async function IntegrationsPage({ searchParams }: { searchParams:
                     <Badge tone="violet">{CARRIER_LABELS[c.type]}</Badge>
                     {!c.enabled && <Badge>Disabled</Badge>}
                     {!c.sender && <Badge tone="red">No sender address</Badge>}
+                    {!c.configured && (
+                      <Badge tone="red">{c.type === 'allegro_shipping' ? 'Allegro account not connected' : 'No API credentials'}</Badge>
+                    )}
                   </div>
                   <p className="text-xs text-slate-500">
                     Labels: {(c.settings.labelFormat ?? 'pdf').toUpperCase()} {c.settings.labelSize ?? 'A6'}
