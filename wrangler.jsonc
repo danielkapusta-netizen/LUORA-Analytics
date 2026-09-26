@@ -8,8 +8,7 @@
   "observability": { "enabled": true },
 
   // Create with: wrangler d1 create luora  (then paste the id here)
-  "d1_databases": [{ "binding": "DB", "database_name": "luora", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "drizzle" }],
-
+  "d1_databases": [{ "binding": "DB", "database_name": "luora", "database_id": "8eb3760b-27d5-4ec1-b663-2a20945332a0", "migrations_dir": "drizzle" }],
   // Create with: wrangler queues create luora-jobs && wrangler queues create luora-jobs-dlq
   "queues": {
     "producers": [{ "binding": "JOBS", "queue": "luora-jobs" }],
@@ -24,8 +23,7 @@
 
   // Secrets (wrangler secret put): ENCRYPTION_KEY, ADMIN_EMAIL, ADMIN_PASSWORD
   "vars": {
-    "APP_URL": "https://luora-os.example.workers.dev",
-    "INTEGRATIONS_MODE": "mock",
-    "SYNC_INTERVAL_MINUTES": "3"
+    "APP_URL": "https://luora-os.danielkapusta.workers.dev",
+    "INTEGRATIONS_MODE": "live","SYNC_INTERVAL_MINUTES": "3"
   }
 }
