@@ -1,4 +1,4 @@
-import { request, type RequestOptions } from '../../../http';
+import { HttpError, request, type RequestOptions } from '../../../http';
 
 export interface EmpikCredentials {
   /** Mirakl front URL given by Empik, e.g. "https://marketplace.empik.com". */
@@ -14,12 +14,30 @@ export class MiraklClient {
 
   async call<T>(method: string, path: string, options: Omit<RequestOptions, 'method'> = {}): Promise<T> {
     const base = this.creds.baseUrl.replace(/\/+$/, '').replace(/\/api$/, '');
-    const { data } = await request<T>(`${base}/api${path}`, {
-      ...options,
-      method,
-      query: { ...options.query, shop_id: this.creds.shopId },
-      headers: { Authorization: this.creds.apiKey, Accept: 'application/json', ...options.headers },
-    });
-    return data;
+    try {
+      const { data } = await request<T>(`${base}/api${path}`, {
+        ...options,
+        method,
+        query: { ...options.query, shop_id: this.creds.shopId },
+        headers: { Authorization: this.creds.apiKey, Accept: 'application/json', ...options.headers },
+      });
+      return data;
+    } catch (err) {
+      throw readableMiraklError(err);
+    }
   }
+}
+
+/** Mirakl errors look like {"message": "...", "status": 400}; surface the message. */
+function readableMiraklError(err: unknown): unknown {
+  if (!(err instanceof HttpError)) return err;
+  try {
+    const body = JSON.parse(err.body) as { message?: string; errors?: { field?: string; message?: string }[] };
+    const details = body.errors?.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).filter(Boolean).join('; ');
+    const message = [body.message, details].filter(Boolean).join(' – ');
+    if (message) return new Error(`Empik (HTTP ${err.status}): ${message}`);
+  } catch {
+    // Not JSON: keep the original error.
+  }
+  return err;
 }

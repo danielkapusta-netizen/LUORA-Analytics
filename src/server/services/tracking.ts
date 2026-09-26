@@ -1,4 +1,4 @@
-import { and, eq, gte, isNull } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, isNull } from 'drizzle-orm';
 import { getDb } from '../db/client';
 import { carrierAccounts, orders, shipments } from '../db/schema';
 import { enqueue, JOBS } from '../jobs/queue';
@@ -22,6 +22,7 @@ export async function runPushTracking(shipmentId: string): Promise<void> {
       carrier: shipment.carrier,
       carrierCode: shipment.carrierCode,
       carrierName: CARRIER_NAMES[shipment.carrier],
+      service: shipment.service,
       trackingNumber: shipment.trackingNumber,
       trackingUrl: shipment.trackingUrl,
     });
@@ -91,4 +92,14 @@ export async function runDeliveryCheck(): Promise<{ checked: number; delivered: 
     }
   }
   return { checked: rows.length, delivered };
+}
+
+/** Re-queues every tracking push that failed (e.g. after fixing a carrier code). */
+export async function retryFailedTrackingPushes(): Promise<number> {
+  const failed = await getDb()
+    .select({ id: shipments.id })
+    .from(shipments)
+    .where(and(eq(shipments.state, 'created'), isNull(shipments.trackingPushedAt), isNotNull(shipments.trackingPushError)));
+  for (const s of failed) await retryTrackingPush(s.id);
+  return failed.length;
 }

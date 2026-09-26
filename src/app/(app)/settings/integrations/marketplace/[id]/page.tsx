@@ -9,6 +9,7 @@ import { requireAdmin } from '@/server/auth';
 import type { MarketplaceAccount } from '@/server/db/schema';
 import { env } from '@/server/env';
 import { ALLEGRO_REDIRECT_PATH } from '@/server/integrations/marketplaces/allegro/client';
+import { EMPIK_CARRIER_CODES } from '@/server/integrations/marketplaces/empik/adapter';
 import { DEFAULT_SHOPIFY_API_VERSION } from '@/server/integrations/marketplaces/shopify/client';
 import { DEFAULT_PICKUP_POINT_KEYS } from '@/server/integrations/marketplaces/shopify/mapper';
 import { loadMarketplaceAccount } from '@/server/services/accounts';
@@ -121,8 +122,11 @@ export default async function MarketplaceAccountPage({ params, searchParams }: {
                   <Field label="Shop ID (optional)">
                     <Input name="shopId" defaultValue={str('shopId')} />
                   </Field>
-                  <Field label="InPost carrier code on Empik (optional)" hint="Leave blank to send carrier name + tracking URL instead.">
-                    <Input name="carrierCodeInpost" defaultValue={s.carrierCodes?.inpost ?? ''} />
+                  <Field label="Empik carrier code: InPost Paczkomat" hint={`Empik's code; default ${EMPIK_CARRIER_CODES.inpostLocker}`}>
+                    <Input name="carrierCodeInpostLocker" defaultValue={s.carrierCodes?.inpostLocker ?? EMPIK_CARRIER_CODES.inpostLocker} />
+                  </Field>
+                  <Field label="Empik carrier code: InPost courier" hint={`Empik's code; default ${EMPIK_CARRIER_CODES.inpostCourier}`}>
+                    <Input name="carrierCodeInpostCourier" defaultValue={s.carrierCodes?.inpostCourier ?? EMPIK_CARRIER_CODES.inpostCourier} />
                   </Field>
                 </div>
                 <Checkbox name="autoAccept" label="Accept new orders automatically when stock covers them" defaultChecked={s.autoAccept ?? false} />

@@ -78,6 +78,8 @@ export interface TrackingInfo {
   /** Carrier code reported by the carrier, e.g. "INPOST", "ALLEGRO", "DPD". */
   carrierCode?: string | null;
   carrierName: string;
+  /** Service the label was bought with, e.g. "inpost_locker_standard". */
+  service?: string | null;
   trackingNumber: string;
   trackingUrl?: string | null;
 }

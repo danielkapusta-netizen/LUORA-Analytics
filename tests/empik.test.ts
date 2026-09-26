@@ -2,7 +2,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import order from './fixtures/empik/order.json';
-import { buildStockCsv, EmpikAdapter } from '@/server/integrations/marketplaces/empik/adapter';
+import { buildStockCsv, EmpikAdapter, empikCarrierCode } from '@/server/integrations/marketplaces/empik/adapter';
 import { mapMiraklOrder, toAlpha2 } from '@/server/integrations/marketplaces/empik/mapper';
 
 const server = setupServer();
@@ -57,11 +57,10 @@ describe('EmpikAdapter', () => {
     expect(result.nextCursor).toBe('2026-09-23T08:00:00Z');
   });
 
-  it('sends tracking (OR23) then confirms shipment (OR24), and skips shipped orders', async () => {
+  function trackingServer(state = { value: 'SHIPPING' }) {
     const calls: string[] = [];
-    let state = 'SHIPPING';
     server.use(
-      http.get(`${BASE}/api/orders`, () => HttpResponse.json({ orders: [{ ...order, order_state: state }], total_count: 1 })),
+      http.get(`${BASE}/api/orders`, () => HttpResponse.json({ orders: [{ ...order, order_state: state.value }], total_count: 1 })),
       http.put(`${BASE}/api/orders/:id/tracking`, async ({ request, params }) => {
         calls.push(`tracking ${params.id} ${JSON.stringify(await request.json())}`);
         return new HttpResponse(null, { status: 204 });
@@ -71,16 +70,56 @@ describe('EmpikAdapter', () => {
         return new HttpResponse(null, { status: 204 });
       }),
     );
+    return calls;
+  }
+  const ref = { externalId: '210045-A', externalNumber: '210045', raw: order, items: [] };
+
+  it('sends Empik’s registered InPost locker code (OR23), then confirms shipment (OR24)', async () => {
+    const state = { value: 'SHIPPING' };
+    const calls = trackingServer(state);
     const adapter = new EmpikAdapter(creds);
-    const ref = { externalId: '210045-A', externalNumber: '210045', raw: order, items: [] };
-    await adapter.pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', trackingNumber: '62001', trackingUrl: 'https://inpost.pl/sledzenie-przesylek?number=62001' });
-    expect(calls).toEqual([
-      'tracking 210045-A {"carrier_name":"InPost","carrier_url":"https://inpost.pl/sledzenie-przesylek?number=62001","tracking_number":"62001"}',
-      'ship 210045-A',
-    ]);
-    state = 'SHIPPED';
+    await adapter.pushTracking(ref, {
+      carrier: 'inpost',
+      carrierName: 'InPost',
+      service: 'inpost_locker_standard',
+      trackingNumber: '62001',
+      trackingUrl: 'https://inpost.pl/sledzenie-przesylek?number=62001',
+    });
+    expect(calls).toEqual(['tracking 210045-A {"carrier_code":"paczkomatyinpost","tracking_number":"62001"}', 'ship 210045-A']);
+    state.value = 'SHIPPED';
     await adapter.pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', trackingNumber: '62001' });
     expect(calls).toHaveLength(2);
+  });
+
+  it('uses the InPost courier code for courier labels, and settings overrides', async () => {
+    const calls = trackingServer();
+    await new EmpikAdapter(creds).pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', service: 'inpost_courier_standard', trackingNumber: '1' });
+    await new EmpikAdapter(creds, { carrierCodes: { inpostLocker: 'custom-locker', inpost: 'InPost' } }).pushTracking(ref, {
+      carrier: 'inpost',
+      carrierName: 'InPost',
+      service: 'inpost_locker_standard',
+      trackingNumber: '2',
+    });
+    expect(calls.filter((c) => c.startsWith('tracking'))).toEqual([
+      'tracking 210045-A {"carrier_code":"inpostpaczkakurierska","tracking_number":"1"}',
+      'tracking 210045-A {"carrier_code":"custom-locker","tracking_number":"2"}',
+    ]);
+  });
+
+  it('maps carriers reported by Allegro Delivery', () => {
+    expect(empikCarrierCode({ carrier: 'allegro_shipping', carrierCode: 'DPD', carrierName: 'x', trackingNumber: '1' })).toBe('dpd');
+    expect(empikCarrierCode({ carrier: 'allegro_shipping', carrierCode: 'ORLEN', carrierName: 'x', trackingNumber: '1' })).toBe('ORLEN');
+    expect(empikCarrierCode({ carrier: 'allegro_shipping', carrierCode: 'ALLEGRO', carrierName: 'x', trackingNumber: '1' })).toBeNull();
+  });
+
+  it('explains which step Empik rejected, with Empik’s message', async () => {
+    server.use(
+      http.get(`${BASE}/api/orders`, () => HttpResponse.json({ orders: [{ ...order }], total_count: 1 })),
+      http.put(`${BASE}/api/orders/:id/tracking`, () => HttpResponse.json({ message: 'Carrier code is unknown', status: 400 }, { status: 400 })),
+    );
+    await expect(new EmpikAdapter(creds).pushTracking(ref, { carrier: 'inpost', carrierName: 'InPost', trackingNumber: '1' })).rejects.toThrow(
+      /OR23.*paczkomatyinpost.*Empik \(HTTP 400\): Carrier code is unknown/,
+    );
   });
 
   it('accepts every order line (OR21)', async () => {

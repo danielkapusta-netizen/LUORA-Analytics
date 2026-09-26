@@ -8,6 +8,45 @@ const PAGE = 100;
 const MAX_PAGES_PER_SYNC = 10;
 const ALREADY_SHIPPED = new Set(['SHIPPED', 'TO_COLLECT', 'RECEIVED', 'CLOSED']);
 
+/**
+ * Empik's registered carrier codes (EmpikPlace help: "Kodowanie przewoźników").
+ * Empik needs `carrier_code` from this list; a free-text carrier name is not accepted.
+ */
+export const EMPIK_CARRIER_CODES = {
+  inpostLocker: 'paczkomatyinpost',
+  inpostCourier: 'inpostpaczkakurierska',
+  dpd: 'dpd',
+  dhl: 'dhl',
+  ups: 'ups',
+  gls: 'gls',
+  fedex: 'fedex',
+  pocztex: 'pocztex',
+  orlen: 'ORLEN',
+} as const;
+
+/** Carrier ids reported by Allegro Delivery → Empik code. */
+const BY_CARRIER_ID: Record<string, string> = {
+  DPD: EMPIK_CARRIER_CODES.dpd,
+  DHL: EMPIK_CARRIER_CODES.dhl,
+  UPS: EMPIK_CARRIER_CODES.ups,
+  GLS: EMPIK_CARRIER_CODES.gls,
+  FEDEX: EMPIK_CARRIER_CODES.fedex,
+  POCZTA_POLSKA: EMPIK_CARRIER_CODES.pocztex,
+  POCZTEX: EMPIK_CARRIER_CODES.pocztex,
+  ORLEN: EMPIK_CARRIER_CODES.orlen,
+  ORLEN_PACZKA: EMPIK_CARRIER_CODES.orlen,
+};
+
+/** Picks Empik's carrier code for a shipment; null when Empik has no code for it. */
+export function empikCarrierCode(tracking: TrackingInfo): string | null {
+  if (tracking.carrier === 'inpost') {
+    return tracking.service === 'inpost_courier_standard' ? EMPIK_CARRIER_CODES.inpostCourier : EMPIK_CARRIER_CODES.inpostLocker;
+  }
+  const id = tracking.carrierCode?.toUpperCase() ?? '';
+  if (id === 'INPOST') return tracking.service?.includes('courier') ? EMPIK_CARRIER_CODES.inpostCourier : EMPIK_CARRIER_CODES.inpostLocker;
+  return BY_CARRIER_ID[id] ?? null;
+}
+
 interface OrdersPage {
   orders: { order_id: string; order_state: string; last_updated_date: string }[];
   total_count: number;
@@ -84,14 +123,23 @@ export class EmpikAdapter implements MarketplaceAdapter {
     const current = await this.client.call<OrdersPage>('GET', '/orders', { query: { order_ids: order.externalId } });
     if (ALREADY_SHIPPED.has(current.orders[0]?.order_state ?? '')) return;
 
-    const carrierCode = this.settings.carrierCodes?.[tracking.carrier];
-    await this.client.call('PUT', `/orders/${id}/tracking`, {
-      body: carrierCode
-        ? { carrier_code: carrierCode, tracking_number: tracking.trackingNumber }
-        : { carrier_name: tracking.carrierName, carrier_url: tracking.trackingUrl ?? undefined, tracking_number: tracking.trackingNumber },
-      responseType: 'none',
-    });
-    await this.client.call('PUT', `/orders/${id}/ship`, { responseType: 'none' });
+    // A code set in the account settings wins; otherwise use Empik's registered code.
+    const slot = tracking.carrier === 'inpost' ? (tracking.service === 'inpost_courier_standard' ? 'inpostCourier' : 'inpostLocker') : null;
+    const carrierCode = (slot && this.settings.carrierCodes?.[slot]?.trim()) || empikCarrierCode(tracking);
+    const body = carrierCode
+      ? { carrier_code: carrierCode, tracking_number: tracking.trackingNumber }
+      : // Last resort for a carrier Empik has no code for ("unregistered" carrier in Mirakl terms).
+        { carrier_name: tracking.carrierName, carrier_url: tracking.trackingUrl ?? undefined, tracking_number: tracking.trackingNumber };
+    try {
+      await this.client.call('PUT', `/orders/${id}/tracking`, { body, responseType: 'none' });
+    } catch (err) {
+      throw new Error(`Empik rejected the tracking number (OR23, ${JSON.stringify(body)}): ${err instanceof Error ? err.message : err}`);
+    }
+    try {
+      await this.client.call('PUT', `/orders/${id}/ship`, { responseType: 'none' });
+    } catch (err) {
+      throw new Error(`Tracking saved, but Empik refused to mark the order shipped (OR24): ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   /** OF21 */

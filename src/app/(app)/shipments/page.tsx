@@ -6,6 +6,8 @@ import { Card, CardHeader, EmptyState, PageHeader, td, th } from '@/components/u
 import { cn, CARRIER_LABELS, formatDate, SERVICE_LABELS } from '@/lib/utils';
 import { requireUser } from '@/server/auth';
 import { recentBatches, recentShipments } from '@/server/services/shipping';
+import { ActionForm, SubmitButton } from '@/components/forms';
+import { retryFailedTrackingAction } from './actions';
 
 export const metadata: Metadata = { title: 'Shipments' };
 
@@ -25,7 +27,17 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
   return (
     <>
       <AutoRefresh active={rows.some((r) => r.shipment.state === 'pending')} />
-      <PageHeader title="Shipments" description="Labels bought through InPost and Allegro Delivery. To create labels in bulk, select orders on the Orders page." />
+      <PageHeader
+        title="Shipments"
+        description="Labels bought through InPost and Allegro Delivery. To create labels in bulk, select orders on the Orders page."
+        actions={
+          rows.some((r) => r.shipment.trackingPushError && !r.shipment.trackingPushedAt) && (
+            <ActionForm action={retryFailedTrackingAction}>
+              <SubmitButton variant="secondary">Retry failed tracking</SubmitButton>
+            </ActionForm>
+          )
+        }
+      />
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-4">
         <Card className="xl:col-span-3">
           <CardHeader

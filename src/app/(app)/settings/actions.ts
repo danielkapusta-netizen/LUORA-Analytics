@@ -58,7 +58,8 @@ export async function saveMarketplaceAction(id: string | null, _prev: ActionResu
     credentials = { baseUrl: text(fd, 'baseUrl'), ...secrets(fd, ['apiKey']), ...(text(fd, 'shopId') ? { shopId: text(fd, 'shopId') } : {}) };
     settings.autoAccept = bool(fd, 'autoAccept');
     const codes: Record<string, string> = {};
-    if (text(fd, 'carrierCodeInpost')) codes.inpost = text(fd, 'carrierCodeInpost');
+    if (text(fd, 'carrierCodeInpostLocker')) codes.inpostLocker = text(fd, 'carrierCodeInpostLocker');
+    if (text(fd, 'carrierCodeInpostCourier')) codes.inpostCourier = text(fd, 'carrierCodeInpostCourier');
     settings.carrierCodes = codes;
   }
 
