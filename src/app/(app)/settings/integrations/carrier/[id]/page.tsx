@@ -85,7 +85,7 @@ export default async function CarrierAccountPage({ params, searchParams }: { par
                   </Select>
                 </Field>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <Field label="IBAN for cash on delivery" hint="Required for COD parcels.">
+                  <Field label="IBAN for cash on delivery (usually not needed)" hint="Only for delivery services that pay COD by bank transfer. For most Allegro methods the money goes to your Allegro balance; leave this empty. If set, it must match your Allegro payout settings.">
                     <Input name="codIban" defaultValue={s.codIban ?? ''} placeholder="PL…" />
                   </Field>
                   <Field label="Account holder">
