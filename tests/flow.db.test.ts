@@ -112,6 +112,21 @@ describe('order flow (D1)', { timeout: 60_000 }, () => {
     expect(updated.shippedAt).not.toBeNull();
   });
 
+  it('marks a parcel as packed and back, logging it on the order', async () => {
+    const [shipment] = await m.db.getDb().select().from(m.schema.shipments).where(m.orm.eq(m.schema.shipments.state, 'created')).limit(1);
+    const read = async () => (await m.db.getDb().select().from(m.schema.shipments).where(m.orm.eq(m.schema.shipments.id, shipment.id)))[0];
+    const userId = await adminId();
+    expect(shipment.packedAt).toBeNull();
+    await m.shipping.setPacked(shipment.id, true, userId);
+    expect(await read()).toMatchObject({ packedBy: userId });
+    expect((await read()).packedAt).toBeInstanceOf(Date);
+    await m.shipping.setPacked(shipment.id, false, userId);
+    expect(await read()).toMatchObject({ packedAt: null, packedBy: null });
+    const events = await m.db.getDb().select().from(m.schema.orderEvents).where(m.orm.eq(m.schema.orderEvents.orderId, shipment.orderId));
+    expect(events.map((e) => e.message)).toEqual(expect.arrayContaining(['Parcel marked as packed', 'Parcel marked as not packed']));
+    await expect(m.shipping.setPacked('missing', true, userId)).rejects.toThrow('Shipment not found');
+  });
+
   it('cancels a label before tracking is sent and reopens the order', async () => {
     const order = (await allOrders()).find((o) => o.marketplace === 'shopify' && !o.pickupPointId && o.status === 'new')!;
     const data = await m.shipping.loadRoutingData();

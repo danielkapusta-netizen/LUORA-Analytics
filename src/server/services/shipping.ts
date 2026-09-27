@@ -364,6 +364,18 @@ export async function runPendingSweep(): Promise<{ polled: number; failed: numbe
   return { polled, failed };
 }
 
+/** Ticks or unticks "Packed" for a shipment. */
+export async function setPacked(shipmentId: string, packed: boolean, userId: string): Promise<void> {
+  const db = getDb();
+  const [row] = await db
+    .update(shipments)
+    .set(packed ? { packedAt: new Date(), packedBy: userId } : { packedAt: null, packedBy: null })
+    .where(eq(shipments.id, shipmentId))
+    .returning({ orderId: shipments.orderId });
+  if (!row) throw new ShippingError('Shipment not found');
+  await logEvent(db, row.orderId, 'edit', packed ? 'Parcel marked as packed' : 'Parcel marked as not packed', { userId });
+}
+
 /** Manually re-checks a pending shipment. */
 export async function pollNow(shipmentId: string): Promise<void> {
   await enqueue(JOBS.shipmentPoll, { shipmentId });

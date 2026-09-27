@@ -11,6 +11,7 @@ import { requireUser } from '@/server/auth';
 import { itemsByOrder } from '@/server/services/orders';
 import { getBatch } from '@/server/services/shipping';
 import { ShipmentOrderDetails } from '../../order-details';
+import { PackedToggle } from '../../packed-toggle';
 
 export const metadata: Metadata = { title: 'Label batch' };
 
@@ -87,6 +88,7 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
                 <th className="w-10" />
                 <th className={th}>Buyer</th>
                 <th className={th}>State</th>
+                <th className={th}>Packed</th>
                 <th className={cn(th, 'text-right')}>Label</th>
               </tr>
             </thead>
@@ -94,7 +96,7 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
               {rows.map(({ shipment: s, order, carrierName }) => (
                 <ExpandableRow
                   key={s.id}
-                  colSpan={4}
+                  colSpan={5}
                   details={<ShipmentOrderDetails order={order} shipment={s} carrierName={carrierName} items={items.get(order.id) ?? []} />}
                 >
                   <td className={td}>
@@ -109,6 +111,9 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
                   <td className={td}>
                     <ShipmentBadge state={s.state} />
                     {s.error && <div className="mt-1 max-w-80 text-xs text-red-700">{s.error}</div>}
+                  </td>
+                  <td className={td}>
+                    {s.state === 'created' && <PackedToggle shipmentId={s.id} packed={Boolean(s.packedAt)} />}
                   </td>
                   <td className={cn(td, 'text-right')}>
                     {s.state === 'created' && (

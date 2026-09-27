@@ -287,6 +287,9 @@ export const shipments = sqliteTable(
     deliveredAt: ts('delivered_at'),
     batchId: text('batch_id').references(() => shipmentBatches.id, { onDelete: 'set null' }),
     createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+    /** Set when staff tick "Packed" on the Shipments page. */
+    packedAt: ts('packed_at'),
+    packedBy: text('packed_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

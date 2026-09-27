@@ -10,6 +10,7 @@ import { requireUser } from '@/server/auth';
 import { itemsByOrder } from '@/server/services/orders';
 import { recentBatches, recentShipments } from '@/server/services/shipping';
 import { ShipmentOrderDetails } from './order-details';
+import { PackedToggle } from './packed-toggle';
 import { ActionForm, SubmitButton } from '@/components/forms';
 import { retryFailedTrackingAction } from './actions';
 
@@ -67,6 +68,7 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
                     <th className="w-10" />
                     <th className={th}>Buyer</th>
                     <th className={th}>State</th>
+                    <th className={th}>Packed</th>
                     <th className={cn(th, 'text-right')}>Label</th>
                   </tr>
                 </thead>
@@ -74,7 +76,7 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
                   {rows.map(({ shipment: s, order, carrierName }) => (
                     <ExpandableRow
                       key={s.id}
-                      colSpan={4}
+                      colSpan={5}
                       className="hover:bg-slate-50"
                       details={<ShipmentOrderDetails order={order} shipment={s} carrierName={carrierName} items={items.get(order.id) ?? []} />}
                     >
@@ -100,6 +102,9 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
                             <span className="text-slate-500">Sending tracking…</span>
                           ) : null}
                         </div>
+                      </td>
+                      <td className={td}>
+                        {s.state === 'created' && <PackedToggle shipmentId={s.id} packed={Boolean(s.packedAt)} />}
                       </td>
                       <td className={cn(td, 'text-right')}>
                         {s.state === 'created' && (
