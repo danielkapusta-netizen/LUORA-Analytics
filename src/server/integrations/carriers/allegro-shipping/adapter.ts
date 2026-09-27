@@ -58,6 +58,8 @@ function toAscii(text: string): string {
 
 /** Allegro rejects longer reference numbers ("Długość podanego tekstu przekracza 35 znaków"). */
 const REFERENCE_NUMBER_MAX = 35;
+/** The strictest carrier limit for the text printed on the label (DHL BOX: "max 30 characters"). */
+const TEXT_ON_LABEL_MAX = 30;
 
 /**
  * Allegro accepts only letters, digits and "_/-" in referenceNumber, without diacritics, and at
@@ -93,7 +95,7 @@ export function buildCreateCommand(req: ShipmentRequest, settings: CarrierSettin
           width: dim(req.parcel.widthCm),
           height: dim(req.parcel.heightCm),
           weight: { value: req.parcel.weightKg, unit: 'KILOGRAMS' },
-          textOnLabel: toAscii(req.reference).slice(0, 50),
+          textOnLabel: toAscii(req.reference).slice(0, TEXT_ON_LABEL_MAX).trimEnd(),
         },
       ],
       insurance: req.insuranceAmount ? { amount: req.insuranceAmount, currency: req.currency } : undefined,

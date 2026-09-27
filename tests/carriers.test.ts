@@ -158,7 +158,8 @@ describe('Allegro Delivery (Wysyłam z Allegro)', () => {
     expect(allegroReferenceNumber('AB: 1x Ż')).toBe('AB_1x_Z');
     const cmd = buildCreateCommand({ ...request, service: 'buyer_choice', reference }, {}, request.shipmentId);
     expect(cmd.input.referenceNumber).toMatch(/^[A-Za-z0-9_/-]+$/);
-    expect(cmd.input.packages[0].textOnLabel).toBe('6B7C4270: 2x Anua PDRN 100 + Hyaluron, 1x Zel lago');
+    expect(cmd.input.packages[0].textOnLabel).toBe('6B7C4270: 2x Anua PDRN 100 + H');
+    expect(cmd.input.packages[0].textOnLabel.length).toBeLessThanOrEqual(30);
   });
 
   it('normalises phone numbers, keeping a foreign prefix (Hungary)', () => {
