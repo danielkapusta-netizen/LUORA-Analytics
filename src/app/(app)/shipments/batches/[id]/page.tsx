@@ -6,7 +6,7 @@ import { AutoRefresh } from '@/components/auto-refresh';
 import { ExpandableRow } from '@/components/expandable-row';
 import { MarketplaceBadge, ShipmentBadge } from '@/components/badges';
 import { Alert, buttonClass, Card, CardHeader, PageHeader, td, th } from '@/components/ui';
-import { cn, formatDate, SERVICE_LABELS } from '@/lib/utils';
+import { cn, formatDate } from '@/lib/utils';
 import { requireUser } from '@/server/auth';
 import { itemsByOrder } from '@/server/services/orders';
 import { getBatch } from '@/server/services/shipping';
@@ -85,47 +85,36 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
             <thead className="bg-slate-50">
               <tr>
                 <th className="w-10" />
-                <th className={th}>Order</th>
-                <th className={th}>Recipient</th>
-                <th className={th}>Carrier</th>
+                <th className={th}>Buyer</th>
                 <th className={th}>State</th>
-                <th className={th}>Tracking</th>
+                <th className={cn(th, 'text-right')}>Label</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {rows.map(({ shipment: s, order, carrierName }) => (
-                <ExpandableRow key={s.id} colSpan={6} details={<ShipmentOrderDetails order={order} items={items.get(order.id) ?? []} />}>
+                <ExpandableRow
+                  key={s.id}
+                  colSpan={4}
+                  details={<ShipmentOrderDetails order={order} shipment={s} carrierName={carrierName} items={items.get(order.id) ?? []} />}
+                >
                   <td className={td}>
-                    <Link href={`/orders/${order.id}`} className="font-medium text-brand-700 hover:underline">
-                      {order.externalNumber}
-                    </Link>
-                    <div className="mt-0.5">
+                    <p className="font-medium">{order.buyer.name}</p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                       <MarketplaceBadge marketplace={order.marketplace} />
+                      <Link href={`/orders/${order.id}`} className="text-brand-700 hover:underline">
+                        {order.externalNumber}
+                      </Link>
                     </div>
-                  </td>
-                  <td className={td}>
-                    {order.shippingAddress.name}
-                    <div className="text-xs text-slate-500">
-                      {order.shippingAddress.city}
-                      {order.pickupPointId ? ` · ${order.pickupPointId}` : ''}
-                    </div>
-                  </td>
-                  <td className={td}>
-                    {carrierName}
-                    <div className="text-xs text-slate-500">{SERVICE_LABELS[s.service] ?? s.service}</div>
                   </td>
                   <td className={td}>
                     <ShipmentBadge state={s.state} />
-                    {s.error && <div className="mt-1 max-w-72 text-xs text-red-700">{s.error}</div>}
+                    {s.error && <div className="mt-1 max-w-80 text-xs text-red-700">{s.error}</div>}
                   </td>
-                  <td className={cn(td, 'font-mono text-xs')}>
-                    {s.trackingNumber ?? '—'}
+                  <td className={cn(td, 'text-right')}>
                     {s.state === 'created' && (
-                      <div>
-                        <a href={`/api/labels/${s.id}`} target="_blank" rel="noreferrer" className="font-sans text-brand-700 hover:underline">
-                          Print
-                        </a>
-                      </div>
+                      <a href={`/api/labels/${s.id}`} target="_blank" rel="noreferrer" className={buttonClass('secondary', 'sm')}>
+                        <Printer className="size-3.5" /> Print label
+                      </a>
                     )}
                   </td>
                 </ExpandableRow>
