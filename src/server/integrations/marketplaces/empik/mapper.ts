@@ -76,11 +76,24 @@ function money(value: number): string {
   return value.toFixed(2);
 }
 
-export function mapMiraklOrder(raw: unknown): NormalizedOrder {
+/** Empik sends media paths relative to the marketplace, e.g. "/media/product/image/…". */
+function absoluteUrl(url: string | null | undefined, base: string | undefined): string | null {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (!base || !url.startsWith('/')) return null;
+  return `${base.replace(/\/+$/, '').replace(/\/api$/, '')}${url}`;
+}
+
+/** @param mediaBase the Empik marketplace URL, used to make relative photo paths loadable. */
+export function mapMiraklOrder(raw: unknown, mediaBase?: string): NormalizedOrder {
   const o = miraklOrderSchema.parse(raw);
   const a = o.customer.shipping_address;
   const countryCode = toAlpha2(a?.country_iso_code);
-  const recipient = [a?.firstname, a?.lastname].filter(Boolean).join(' ') || [o.customer.firstname, o.customer.lastname].filter(Boolean).join(' ');
+  const point = pickupPoint(o);
+  const buyerName = [o.customer.firstname, o.customer.lastname].filter(Boolean).join(' ');
+  const addressName = [a?.firstname, a?.lastname].filter(Boolean).join(' ');
+  // For Paczkomat orders Empik puts the locker code in the recipient's surname; the parcel is for the buyer.
+  const recipient = addressName && addressName.toUpperCase() !== point ? addressName : buyerName || addressName;
   const cod = COD.test(o.payment_type ?? '') || COD.test(o.shipping_type_label ?? '');
 
   return {
@@ -92,7 +105,7 @@ export function mapMiraklOrder(raw: unknown): NormalizedOrder {
     cancelled: CANCELLED_STATES.has(o.order_state),
     fulfilled: SHIPPED_STATES.has(o.order_state),
     buyer: {
-      name: [o.customer.firstname, o.customer.lastname].filter(Boolean).join(' ') || recipient,
+      name: buyerName || recipient,
       email: o.customer_notification_email ?? null,
       phone: a?.phone ?? null,
     },
@@ -108,7 +121,7 @@ export function mapMiraklOrder(raw: unknown): NormalizedOrder {
     },
     deliveryMethodId: o.shipping_type_code ?? null,
     deliveryMethodName: o.shipping_type_label ?? null,
-    pickupPointId: pickupPoint(o),
+    pickupPointId: point,
     codAmount: cod ? money(o.total_price) : null,
     totalAmount: money(o.total_price),
     shippingAmount: o.shipping_price != null ? money(o.shipping_price) : null,
@@ -122,7 +135,7 @@ export function mapMiraklOrder(raw: unknown): NormalizedOrder {
       quantity: l.quantity,
       unitPrice: money(l.price_unit ?? (l.quantity > 0 ? l.price / l.quantity : l.price)),
       externalProductId: l.offer_id != null ? String(l.offer_id) : null,
-      imageUrl: (l.product_medias?.find((m) => m.type?.toLowerCase() === 'small') ?? l.product_medias?.[0])?.media_url ?? null,
+      imageUrl: absoluteUrl((l.product_medias?.find((m) => m.type?.toLowerCase() === 'small') ?? l.product_medias?.[0])?.media_url, mediaBase),
     })),
     revision: o.last_updated_date,
     raw,

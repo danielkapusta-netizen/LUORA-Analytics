@@ -45,6 +45,27 @@ describe('mapMiraklOrder', () => {
     expect(mapMiraklOrder({ ...order, shipping_pudo_id: null }).pickupPointId).toBeNull();
   });
 
+  it('ships a Paczkomat order to the buyer, not to the locker code Empik puts in the surname', () => {
+    const o = mapMiraklOrder({
+      ...order,
+      shipping_pudo_id: null,
+      customer: { ...order.customer, firstname: 'Viktoria', lastname: 'Voukava', shipping_address: { ...order.customer.shipping_address, firstname: null, lastname: 'WAW102BAPP' } },
+      order_additional_fields: [{ code: 'delivery-point-name', type: 'STRING', value: 'WAW102BAPP' }],
+    });
+    expect(o.shippingAddress.name).toBe('Viktoria Voukava');
+    expect(o.buyer.name).toBe('Viktoria Voukava');
+    expect(o.pickupPointId).toBe('WAW102BAPP');
+  });
+
+  it('turns Empik’s relative photo paths into full URLs', () => {
+    const withMedia = {
+      ...order,
+      order_lines: [{ ...order.order_lines[0], product_medias: [{ media_url: '/media/product/image/abc', type: 'SMALL' }] }],
+    };
+    expect(mapMiraklOrder(withMedia, 'https://marketplace.empik.com/api').items[0].imageUrl).toBe('https://marketplace.empik.com/media/product/image/abc');
+    expect(mapMiraklOrder(withMedia).items[0].imageUrl).toBeNull();
+  });
+
   it('is not shippable until accepted and paid', () => {
     expect(mapMiraklOrder({ ...order, order_state: 'WAITING_ACCEPTANCE' }).readyToShip).toBe(false);
     expect(mapMiraklOrder({ ...order, order_state: 'CANCELED' }).cancelled).toBe(true);

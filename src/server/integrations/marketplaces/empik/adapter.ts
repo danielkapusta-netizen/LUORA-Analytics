@@ -97,6 +97,7 @@ export function buildStockCsv(updates: StockUpdate[]): string {
 export class EmpikAdapter implements MarketplaceAdapter {
   readonly marketplace = 'empik' as const;
   private readonly client: MiraklClient;
+  private readonly baseUrl: string;
 
   constructor(
     creds: EmpikCredentials,
@@ -105,6 +106,7 @@ export class EmpikAdapter implements MarketplaceAdapter {
     private readonly saveSettings?: (next: MarketplaceSettings) => Promise<void>,
   ) {
     this.client = new MiraklClient(creds);
+    this.baseUrl = creds.baseUrl;
   }
 
   /** Empik's carriers (SH21), cached in the account settings for a day. */
@@ -138,7 +140,7 @@ export class EmpikAdapter implements MarketplaceAdapter {
         if (raw.last_updated_date > newest) newest = raw.last_updated_date;
         // STAGING orders are still in Empik's fraud check and may never reach the seller.
         if (raw.order_state === 'STAGING') continue;
-        orders.push(mapMiraklOrder(raw));
+        orders.push(mapMiraklOrder(raw, this.baseUrl));
       }
       hasMore = offset + data.orders.length < data.total_count;
       if (!hasMore || data.orders.length === 0) break;
@@ -148,7 +150,7 @@ export class EmpikAdapter implements MarketplaceAdapter {
 
   async getOrder(externalId: string): Promise<NormalizedOrder | null> {
     const data = await this.client.call<OrdersPage>('GET', '/orders', { query: { order_ids: externalId } });
-    return data.orders[0] ? mapMiraklOrder(data.orders[0]) : null;
+    return data.orders[0] ? mapMiraklOrder(data.orders[0], this.baseUrl) : null;
   }
 
   /** OR21: accept every line of an order waiting for acceptance. */

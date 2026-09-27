@@ -154,7 +154,14 @@ export async function upsertOrders(
         await tx
           .update(orderItems)
           .set({ imageUrl: item.imageUrl })
-          .where(and(eq(orderItems.orderId, existing.id), eq(orderItems.externalLineId, item.externalLineId), isNull(orderItems.imageUrl)));
+          .where(
+            and(
+              eq(orderItems.orderId, existing.id),
+              eq(orderItems.externalLineId, item.externalLineId),
+              // Relative paths are Empik photos stored before they were made absolute.
+              or(isNull(orderItems.imageUrl), like(orderItems.imageUrl, '/%')),
+            ),
+          );
       }
       // The marketplace (e.g. Allegro, Empik) may have no photo of its own; fall back to the product's.
       await tx.run(sql`
@@ -243,40 +250,55 @@ export async function refreshOrder(orderId: string): Promise<void> {
   await upsertOrders(account, [fresh]);
 }
 
-const PHOTO_BACKFILL_LIMIT = 20;
+const BACKFILL_LIMIT = 20;
 
 /**
- * Retries photos for order items that still have none: the marketplace's per-item image
- * lookup (e.g. Allegro's offer photo, which is a separate call per offer) can fail or get
- * rate-limited during a big sync and is never retried by the regular order sync afterwards,
- * since that only revisits orders with new marketplace events.
+ * Re-reads orders whose stored data is incomplete. Regular sync only revisits orders with new
+ * marketplace events, so these would otherwise stay incomplete:
+ * - open Empik Paczkomat orders without a pickup point (imported before the point was read);
+ * - items without a photo, or with a relative Empik photo path: the per-item lookup (e.g. Allegro's
+ *   offer photo, a separate call per offer) can fail or get rate-limited during a big sync.
  */
-export async function backfillPhotos(limit = PHOTO_BACKFILL_LIMIT): Promise<{ checked: number; refreshed: number }> {
+export async function backfillOrderDetails(limit = BACKFILL_LIMIT): Promise<{ checked: number; refreshed: number }> {
   const db = getDb();
-  const rows = await db
+  const lockers = await db
+    .select({ orderId: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.marketplace, 'empik'),
+        eq(orders.deliveryMethodId, 'PACKSTATION'),
+        isNull(orders.pickupPointId),
+        inArray(orders.status, EDITABLE),
+      ),
+    )
+    .orderBy(desc(orders.placedAt))
+    .limit(limit);
+  const photos = await db
     .selectDistinct({ orderId: orderItems.orderId })
     .from(orderItems)
     .innerJoin(orders, eq(orders.id, orderItems.orderId))
     .where(
       and(
-        isNull(orderItems.imageUrl),
+        or(isNull(orderItems.imageUrl), like(orderItems.imageUrl, '/%')),
         or(isNotNull(orderItems.sku), isNotNull(orderItems.externalProductId)),
         ne(orders.status, 'cancelled'),
       ),
     )
     .orderBy(desc(orders.placedAt))
     .limit(limit);
+  const ids = [...new Set([...lockers, ...photos].map((r) => r.orderId))].slice(0, limit);
 
   let refreshed = 0;
-  for (const { orderId } of rows) {
+  for (const orderId of ids) {
     try {
       await refreshOrder(orderId);
       refreshed++;
     } catch (err) {
-      console.error(`[photo-backfill] ${orderId}:`, err instanceof Error ? err.message : err);
+      console.error(`[order-backfill] ${orderId}:`, err instanceof Error ? err.message : err);
     }
   }
-  return { checked: rows.length, refreshed };
+  return { checked: ids.length, refreshed };
 }
 
 export async function loadOrder(orderId: string): Promise<Order> {
