@@ -149,6 +149,7 @@ export async function saveCarrierAction(id: string | null, _prev: ActionResult, 
   const settings: CarrierSettings = {
     labelFormat: text(fd, 'labelFormat') === 'zpl' ? 'zpl' : 'pdf',
     labelSize: text(fd, 'labelSize') === 'A4' ? 'A4' : 'A6',
+    productsInReference: bool(fd, 'productsInReference'),
   };
   let credentials: Record<string, unknown> = {};
   if (type === 'inpost') {

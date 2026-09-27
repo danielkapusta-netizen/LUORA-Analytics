@@ -96,6 +96,8 @@ export interface CarrierSettings {
   demo?: boolean;
   labelFormat?: 'pdf' | 'zpl';
   labelSize?: 'A4' | 'A6';
+  /** Add the product names to the label reference after the order number (default on). */
+  productsInReference?: boolean;
   /** InPost: "dispatch_order" (courier pickup) or "parcel_locker" (you drop parcels at a locker). */
   sendingMethod?: string;
   /** InPost: Paczkomat or point where you drop parcels off (e.g. "ZOF01M"); required by ShipX for parcel_locker, pok and courier_pok. */

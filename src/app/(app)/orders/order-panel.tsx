@@ -1,4 +1,4 @@
-import { ExternalLink, MapPin, Package, Printer, Store, Truck, UserRound } from 'lucide-react';
+import { BadgeCheck, ExternalLink, Hash, MapPin, Package, Printer, Store, Truck, UserRound } from 'lucide-react';
 import Link from 'next/link';
 import { AutoRefresh } from '@/components/auto-refresh';
 import { MarketplaceBadge, ShipmentBadge, StatusBadge } from '@/components/badges';
@@ -50,19 +50,8 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
   return (
     <Card className="p-5">
       <AutoRefresh active={waiting} />
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs text-slate-400">Order #</p>
-          <p className="text-2xl font-semibold tracking-tight">{order.externalNumber}</p>
-        </div>
-        <div className="text-right">
-          <StatusBadge status={order.status} />
-          <p className="mt-1.5 text-sm text-slate-500">{formatDate(order.placedAt, false)}</p>
-        </div>
-      </div>
-
       {/* Customer */}
-      <div className="mt-4 flex items-center gap-3 rounded-2xl bg-canvas p-4">
+      <div className="flex items-center gap-3 rounded-2xl bg-canvas p-4">
         <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-brand-100 text-base font-semibold text-brand-700">
           {initials(order.buyer.name)}
         </span>
@@ -82,38 +71,8 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
         </div>
       </div>
 
-      <div className="mt-2 divide-y divide-slate-100">
-        <InfoRow icon={Store} label="Source">
-          <span className="flex items-center gap-2">
-            <MarketplaceBadge marketplace={order.marketplace} />
-            <span className="truncate text-slate-600">{account.name}</span>
-          </span>
-        </InfoRow>
-        <InfoRow icon={Truck} label="Courier">
-          {live ? (
-            <>
-              <span className="font-medium">{liveCarrier?.name ?? CARRIER_LABELS[live.carrier]}</span>
-              {live.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[live.service] ?? live.service}</span>}
-              {live.trackingNumber && <p className="mt-0.5 font-mono text-xs text-slate-500">{live.trackingNumber}</p>}
-            </>
-          ) : route && routeCarrier ? (
-            <>
-              <span className="font-medium">{routeCarrier.name}</span>
-              {route.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[route.service] ?? route.service}</span>}
-            </>
-          ) : (
-            <span className="text-slate-500">Not chosen yet</span>
-          )}
-          {order.deliveryMethodName && <p className="mt-0.5 text-xs text-slate-400">Buyer chose: {order.deliveryMethodName}</p>}
-        </InfoRow>
-        <InfoRow icon={MapPin} label={order.pickupPointId ? 'Pickup point' : 'Ship to'}>
-          {order.pickupPointId && <span className="font-medium">{order.pickupPointId} · </span>}
-          {a.street}, {a.postalCode} {a.city}
-        </InfoRow>
-      </div>
-
       {/* Items */}
-      <div className="mt-3 flex items-center gap-3">
+      <div className="mt-4 flex items-center gap-3">
         <span className="h-px flex-1 bg-slate-200" />
         <span className="text-xs font-medium text-slate-500">Order items</span>
         <span className="h-px flex-1 bg-slate-200" />
@@ -202,10 +161,51 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
           {canShip && !route && <p className="text-center text-xs text-slate-500">No shipping rule matches; choose a carrier in the full order view.</p>}
         </div>
 
-        <Link href={`/orders/${order.id}`} className="mt-3 block text-center text-sm font-medium text-brand-700 underline underline-offset-4">
-          Open full order
-        </Link>
       </div>
+      <div className="mt-3 divide-y divide-slate-100">
+        <InfoRow icon={Store} label="Source">
+          <span className="flex items-center gap-2">
+            <MarketplaceBadge marketplace={order.marketplace} />
+            <span className="truncate text-slate-600">{account.name}</span>
+          </span>
+        </InfoRow>
+        <InfoRow icon={Hash} label="Order #">
+          <span className="font-medium">{order.externalNumber}</span>
+          <span className="text-slate-500"> · {formatDate(order.placedAt, false)}</span>
+        </InfoRow>
+        <InfoRow icon={Truck} label="Courier">
+          {live ? (
+            <>
+              <span className="font-medium">{liveCarrier?.name ?? CARRIER_LABELS[live.carrier]}</span>
+              {live.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[live.service] ?? live.service}</span>}
+              {live.trackingNumber && <p className="mt-0.5 font-mono text-xs text-slate-500">{live.trackingNumber}</p>}
+            </>
+          ) : route && routeCarrier ? (
+            <>
+              <span className="font-medium">{routeCarrier.name}</span>
+              {route.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[route.service] ?? route.service}</span>}
+            </>
+          ) : (
+            <span className="text-slate-500">Not chosen yet</span>
+          )}
+          {order.deliveryMethodName && <p className="mt-0.5 text-xs text-slate-400">Buyer chose: {order.deliveryMethodName}</p>}
+        </InfoRow>
+        <InfoRow icon={MapPin} label={order.pickupPointId ? 'Pickup point' : 'Ship to'}>
+          {order.pickupPointId && <span className="font-medium">{order.pickupPointId} · </span>}
+          {a.street}, {a.postalCode} {a.city}
+        </InfoRow>
+        <InfoRow icon={BadgeCheck} label="Status">
+          <span className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={order.status} />
+            <span className="text-xs text-slate-400">{account.name}: {order.marketplaceStatus}</span>
+          </span>
+        </InfoRow>
+      </div>
+
+
+      <Link href={`/orders/${order.id}`} className="mt-2 block text-center text-sm font-medium text-brand-700 underline underline-offset-4">
+        Open full order
+      </Link>
       <p className="mt-3 text-center text-[11px] text-slate-400">Updated {formatDate(order.updatedAt)}</p>
     </Card>
   );

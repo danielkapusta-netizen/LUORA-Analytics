@@ -149,7 +149,10 @@ export async function requestShipment(input: ShipmentInput, userId: string | nul
         carrier: carrier.type,
         service: input.service,
         parcel: input.parcel,
-        options: { reference: labelReference(order.externalNumber, items), ...input.options },
+        options: {
+          reference: carrier.settings.productsInReference === false ? order.externalNumber : labelReference(order.externalNumber, items),
+          ...input.options,
+        },
         labelFormat: input.labelFormat ?? carrier.settings.labelFormat ?? 'pdf',
         labelSize: input.labelSize ?? carrier.settings.labelSize ?? 'A6',
         batchId: input.batchId ?? null,

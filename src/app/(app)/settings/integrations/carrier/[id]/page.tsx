@@ -142,6 +142,11 @@ export default async function CarrierAccountPage({ params, searchParams }: { par
                 </Select>
               </Field>
             </fieldset>
+            <Checkbox
+              name="productsInReference"
+              label="Add product names to the label reference (after the order number)"
+              defaultChecked={s.productsInReference !== false}
+            />
             <Checkbox name="enabled" label="Enabled" defaultChecked={account?.enabled ?? true} />
             <div>
               <SubmitButton>{account ? 'Save' : 'Create account'}</SubmitButton>
