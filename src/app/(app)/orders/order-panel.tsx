@@ -101,9 +101,9 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
 
       {/* Total and actions */}
       <div className="mt-4 rounded-2xl bg-canvas p-4">
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-center justify-between">
           <span className="text-sm text-slate-500">Total{order.codAmount ? ' (cash on delivery)' : ''}</span>
-          <span className="text-2xl font-semibold tracking-tight tabular-nums">{formatMoney(order.totalAmount, order.currency)}</span>
+          <span className="text-lg font-semibold tabular-nums">{formatMoney(order.totalAmount, order.currency)}</span>
         </div>
 
         <div className="mt-4 space-y-2">
