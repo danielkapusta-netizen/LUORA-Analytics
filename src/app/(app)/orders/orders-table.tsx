@@ -4,6 +4,7 @@ import { Printer, Truck } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { MarketplaceBadge, StatusBadge } from '@/components/badges';
+import { PrintLabelButton } from '@/components/print-label-button';
 import { ActionForm, SubmitButton } from '@/components/forms';
 import { buttonClass, EmptyState, Select } from '@/components/ui';
 import { cn, formatMoney } from '@/lib/utils';
@@ -83,9 +84,9 @@ export function OrdersTable({
             </SubmitButton>
           </ActionForm>
           {labelIds.length > 0 && (
-            <a className={buttonClass('secondary', 'sm')} href={`/api/labels/merged?shipments=${labelIds.join(',')}`} target="_blank" rel="noreferrer">
+            <PrintLabelButton className={buttonClass('secondary', 'sm')} href={`/api/labels/merged?shipments=${labelIds.join(',')}`}>
               <Printer className="size-3.5" /> Print {labelIds.length} label(s)
-            </a>
+            </PrintLabelButton>
           )}
           <ActionForm action={bulkStatusAction} className="flex items-center gap-1.5">
             <input type="hidden" name="ids" value={ids} />

@@ -1,6 +1,7 @@
 import { BadgeCheck, ExternalLink, Hash, MapPin, Printer, Store, Truck } from 'lucide-react';
 import Link from 'next/link';
 import { AutoRefresh } from '@/components/auto-refresh';
+import { PrintLabelButton } from '@/components/print-label-button';
 import { MarketplaceBadge, ShipmentBadge, StatusBadge } from '@/components/badges';
 import { ActionForm, SubmitButton } from '@/components/forms';
 import { CustomerSummary, OrderItemsList } from '@/components/order-summary';
@@ -105,9 +106,9 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
           )}
           {live?.state === 'created' && (
             <div className="grid grid-cols-2 gap-2">
-              <a className={buttonClass('primary')} href={`/api/labels/${live.id}`} target="_blank" rel="noreferrer">
+              <PrintLabelButton className={buttonClass('primary')} href={`/api/labels/${live.id}`}>
                 <Printer className="size-4" /> Print label
-              </a>
+              </PrintLabelButton>
               {live.trackingUrl ? (
                 <a className={cn(buttonClass('secondary'), 'bg-white')} href={live.trackingUrl} target="_blank" rel="noreferrer">
                   <ExternalLink className="size-4" /> Track

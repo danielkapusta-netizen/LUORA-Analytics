@@ -2,6 +2,7 @@ import { Printer } from 'lucide-react';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { AutoRefresh } from '@/components/auto-refresh';
+import { PrintLabelButton } from '@/components/print-label-button';
 import { ExpandableRow } from '@/components/expandable-row';
 import { MarketplaceBadge, ShipmentBadge } from '@/components/badges';
 import { buttonClass, Card, CardHeader, EmptyState, PageHeader, td, th } from '@/components/ui';
@@ -108,9 +109,9 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
                       </td>
                       <td className={cn(td, 'text-right')}>
                         {s.state === 'created' && (
-                          <a href={`/api/labels/${s.id}`} target="_blank" rel="noreferrer" className={buttonClass('secondary', 'sm')}>
+                          <PrintLabelButton href={`/api/labels/${s.id}`} className={buttonClass('secondary', 'sm')}>
                             <Printer className="size-3.5" /> Print label
-                          </a>
+                          </PrintLabelButton>
                         )}
                       </td>
                     </ExpandableRow>

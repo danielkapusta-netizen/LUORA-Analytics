@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { AutoRefresh } from '@/components/auto-refresh';
+import { PrintLabelButton } from '@/components/print-label-button';
 import { MarketplaceBadge, ShipmentBadge, StatusBadge } from '@/components/badges';
 import { ActionForm, SubmitButton } from '@/components/forms';
 import { Alert, buttonClass, Card, CardBody, CardHeader, Field, Input, Select, td, Textarea, th } from '@/components/ui';
@@ -111,9 +112,9 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {s.state === 'created' && (
-                        <a className={buttonClass('primary', 'sm')} href={`/api/labels/${s.id}`} target="_blank" rel="noreferrer">
+                        <PrintLabelButton className={buttonClass('primary', 'sm')} href={`/api/labels/${s.id}`}>
                           <Printer className="size-3.5" /> Print label
-                        </a>
+                        </PrintLabelButton>
                       )}
                       {s.trackingUrl && (
                         <a className={buttonClass('secondary', 'sm')} href={s.trackingUrl} target="_blank" rel="noreferrer">
