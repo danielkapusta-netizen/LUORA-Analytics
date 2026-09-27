@@ -44,8 +44,21 @@ export interface SummaryItem {
   imageUrl: string | null;
 }
 
-/** Products with photo and quantity; prices only when a currency is given. */
-export function OrderItemsList({ items, currency, className }: { items: SummaryItem[]; currency?: string; className?: string }) {
+/**
+ * Products with photo and quantity; prices only when a currency is given.
+ * `highlightQuantity` marks lines with more than one piece in yellow, so packers don't miss them.
+ */
+export function OrderItemsList({
+  items,
+  currency,
+  highlightQuantity,
+  className,
+}: {
+  items: SummaryItem[];
+  currency?: string;
+  highlightQuantity?: boolean;
+  className?: string;
+}) {
   return (
     <ul className={cn('space-y-2.5', className)}>
       {items.map((i) => (
@@ -61,7 +74,14 @@ export function OrderItemsList({ items, currency, className }: { items: SummaryI
           <div className="min-w-0 flex-1">
             <p className="line-clamp-2 text-sm leading-snug">{i.name}</p>
             <p className="mt-0.5 text-xs text-slate-400">
-              Qty {i.quantity} {i.sku ? `· ${i.sku}` : ''}
+              {highlightQuantity && i.quantity > 1 ? (
+                <span className="mr-1 inline-flex rounded-md bg-amber-100 px-1.5 py-0.5 text-sm font-semibold text-amber-800 ring-1 ring-amber-300">
+                  Qty {i.quantity}
+                </span>
+              ) : (
+                <>Qty {i.quantity} </>
+              )}
+              {i.sku ? `· ${i.sku}` : ''}
             </p>
           </div>
           {currency && <span className="text-sm font-semibold whitespace-nowrap tabular-nums">{formatMoney(Number(i.unitPrice) * i.quantity, currency)}</span>}

@@ -44,7 +44,7 @@ export function ShipmentOrderDetails({
           </div>
         </div>
       </div>
-      {items.length ? <OrderItemsList items={items} /> : <p className="text-sm text-slate-500">No items on this order.</p>}
+      {items.length ? <OrderItemsList items={items} highlightQuantity /> : <p className="text-sm text-slate-500">No items on this order.</p>}
     </div>
   );
 }
