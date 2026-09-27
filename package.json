@@ -27,8 +27,10 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
+      "msw",
       "sharp",
-      "unrs-resolver"
+      "unrs-resolver",
+      "workerd"
     ]
   },
   "dependencies": {
