@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
-import { getDb, insertStatements, type Tx } from '../db/client';
+import { chunk, getDb, insertStatements, type Tx } from '../db/client';
 import {
   marketplaceAccounts,
   orderEvents,
@@ -429,6 +429,16 @@ export async function statusCounts(): Promise<Record<string, number>> {
     .from(orders)
     .groupBy(orders.status);
   return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+}
+
+/** Items of many orders at once (e.g. for the Shipments pages), keyed by order id. */
+export async function itemsByOrder(orderIds: string[]) {
+  const byOrder = new Map<string, (typeof orderItems.$inferSelect)[]>();
+  for (const ids of chunk([...new Set(orderIds)])) {
+    const rows = await getDb().select().from(orderItems).where(inArray(orderItems.orderId, ids)).orderBy(asc(orderItems.externalLineId));
+    for (const row of rows) byOrder.set(row.orderId, [...(byOrder.get(row.orderId) ?? []), row]);
+  }
+  return byOrder;
 }
 
 export async function getOrderDetail(orderId: string) {

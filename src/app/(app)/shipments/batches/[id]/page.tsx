@@ -3,11 +3,14 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { AutoRefresh } from '@/components/auto-refresh';
+import { ExpandableRow } from '@/components/expandable-row';
 import { MarketplaceBadge, ShipmentBadge } from '@/components/badges';
 import { Alert, buttonClass, Card, CardHeader, PageHeader, td, th } from '@/components/ui';
 import { cn, formatDate, SERVICE_LABELS } from '@/lib/utils';
 import { requireUser } from '@/server/auth';
+import { itemsByOrder } from '@/server/services/orders';
 import { getBatch } from '@/server/services/shipping';
+import { ShipmentOrderDetails } from '../../order-details';
 
 export const metadata: Metadata = { title: 'Label batch' };
 
@@ -17,6 +20,7 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
   const data = await getBatch(id);
   if (!data) notFound();
   const { batch, rows, skipped } = data;
+  const items = await itemsByOrder(rows.map((r) => r.order.id));
   const done = rows.filter((r) => r.shipment.state === 'created').length;
   const failed = rows.filter((r) => r.shipment.state === 'failed').length;
   const pending = rows.filter((r) => r.shipment.state === 'pending').length;
@@ -80,6 +84,7 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
           <table className="min-w-full divide-y divide-slate-100">
             <thead className="bg-slate-50">
               <tr>
+                <th className="w-10" />
                 <th className={th}>Order</th>
                 <th className={th}>Recipient</th>
                 <th className={th}>Carrier</th>
@@ -89,7 +94,7 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
             </thead>
             <tbody className="divide-y divide-slate-100">
               {rows.map(({ shipment: s, order, carrierName }) => (
-                <tr key={s.id}>
+                <ExpandableRow key={s.id} colSpan={6} details={<ShipmentOrderDetails order={order} items={items.get(order.id) ?? []} />}>
                   <td className={td}>
                     <Link href={`/orders/${order.id}`} className="font-medium text-brand-700 hover:underline">
                       {order.externalNumber}
@@ -123,7 +128,7 @@ export default async function BatchPage({ params }: { params: Promise<{ id: stri
                       </div>
                     )}
                   </td>
-                </tr>
+                </ExpandableRow>
               ))}
             </tbody>
           </table>

@@ -1,22 +1,14 @@
-import { BadgeCheck, ExternalLink, Hash, MapPin, Package, Printer, Store, Truck, UserRound } from 'lucide-react';
+import { BadgeCheck, ExternalLink, Hash, MapPin, Printer, Store, Truck } from 'lucide-react';
 import Link from 'next/link';
 import { AutoRefresh } from '@/components/auto-refresh';
 import { MarketplaceBadge, ShipmentBadge, StatusBadge } from '@/components/badges';
 import { ActionForm, SubmitButton } from '@/components/forms';
+import { CustomerSummary, OrderItemsList } from '@/components/order-summary';
 import { buttonClass, Card } from '@/components/ui';
 import { CARRIER_LABELS, cn, formatDate, formatMoney, SERVICE_LABELS } from '@/lib/utils';
 import { getOrderDetail } from '@/server/services/orders';
 import { loadRoutingData, routeOrder } from '@/server/services/shipping';
 import { pollShipmentAction, quickLabelAction, retryTrackingAction } from './actions';
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0].toUpperCase())
-    .join('');
-}
 
 function InfoRow({ icon: Icon, label, children }: { icon: typeof Store; label: string; children: React.ReactNode }) {
   return (
@@ -50,26 +42,7 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
   return (
     <Card className="p-5">
       <AutoRefresh active={waiting} />
-      {/* Customer */}
-      <div className="flex items-center gap-3 rounded-2xl bg-canvas p-4">
-        <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-brand-100 text-base font-semibold text-brand-700">
-          {initials(order.buyer.name)}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-medium">{order.buyer.name}</p>
-          <div className="mt-1.5 flex items-center gap-1.5 text-sm">
-            <UserRound className="size-3.5 shrink-0 text-slate-400" />
-            {a.name === order.buyer.name ? (
-              <span className="text-slate-500">Recipient is the buyer</span>
-            ) : (
-              <span>
-                <span className="text-slate-500">Ships to </span>
-                <span className="font-medium text-amber-700">{a.name}</span>
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
+      <CustomerSummary buyerName={order.buyer.name} recipientName={a.name} />
 
       {/* Items */}
       <div className="mt-4 flex items-center gap-3">
@@ -77,27 +50,7 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
         <span className="text-xs font-medium text-slate-500">Order items</span>
         <span className="h-px flex-1 bg-slate-200" />
       </div>
-      <ul className="mt-3 space-y-2.5">
-        {items.map((i) => (
-          <li key={i.id} className="flex items-center gap-3">
-            <span className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-black/5 bg-white">
-              {i.imageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element -- marketplace CDNs vary; no image optimiser on Workers
-                <img src={i.imageUrl} alt="" className="size-full object-contain" loading="lazy" />
-              ) : (
-                <Package className="size-5 text-slate-300" />
-              )}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="line-clamp-2 text-sm leading-snug">{i.name}</p>
-              <p className="mt-0.5 text-xs text-slate-400">
-                Qty {i.quantity} {i.sku ? `· ${i.sku}` : ''}
-              </p>
-            </div>
-            <span className="text-sm font-semibold whitespace-nowrap tabular-nums">{formatMoney(Number(i.unitPrice) * i.quantity, order.currency)}</span>
-          </li>
-        ))}
-      </ul>
+      <OrderItemsList items={items} currency={order.currency} className="mt-3" />
       <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
         <span className="text-sm text-slate-500">Total{order.codAmount ? ' (cash on delivery)' : ''}</span>
         <span className="text-base font-semibold tabular-nums">{formatMoney(order.totalAmount, order.currency)}</span>

@@ -1,11 +1,14 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { AutoRefresh } from '@/components/auto-refresh';
+import { ExpandableRow } from '@/components/expandable-row';
 import { MarketplaceBadge, ShipmentBadge } from '@/components/badges';
 import { Card, CardHeader, EmptyState, PageHeader, td, th } from '@/components/ui';
 import { cn, CARRIER_LABELS, formatDate, SERVICE_LABELS } from '@/lib/utils';
 import { requireUser } from '@/server/auth';
+import { itemsByOrder } from '@/server/services/orders';
 import { recentBatches, recentShipments } from '@/server/services/shipping';
+import { ShipmentOrderDetails } from './order-details';
 import { ActionForm, SubmitButton } from '@/components/forms';
 import { retryFailedTrackingAction } from './actions';
 
@@ -23,6 +26,7 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
   await requireUser();
   const { state = '' } = await searchParams;
   const [rows, batches] = await Promise.all([recentShipments({ state: state || undefined }), recentBatches(10)]);
+  const items = await itemsByOrder(rows.map((r) => r.order.id));
 
   return (
     <>
@@ -59,6 +63,7 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
               <table className="min-w-full divide-y divide-slate-100">
                 <thead className="bg-slate-50">
                   <tr>
+                    <th className="w-10" />
                     <th className={th}>Order</th>
                     <th className={th}>Carrier</th>
                     <th className={th}>Tracking</th>
@@ -69,7 +74,12 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {rows.map(({ shipment: s, order, carrierName }) => (
-                    <tr key={s.id} className="hover:bg-slate-50">
+                    <ExpandableRow
+                      key={s.id}
+                      colSpan={7}
+                      className="hover:bg-slate-50"
+                      details={<ShipmentOrderDetails order={order} items={items.get(order.id) ?? []} />}
+                    >
                       <td className={td}>
                         <Link href={`/orders/${order.id}`} className="font-medium text-brand-700 hover:underline">
                           {order.externalNumber}
@@ -110,7 +120,7 @@ export default async function ShipmentsPage({ searchParams }: { searchParams: Pr
                         )}
                       </td>
                       <td className={cn(td, 'whitespace-nowrap text-slate-600')}>{formatDate(s.createdAt)}</td>
-                    </tr>
+                    </ExpandableRow>
                   ))}
                 </tbody>
               </table>
