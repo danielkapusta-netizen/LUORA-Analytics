@@ -19,7 +19,7 @@
   "r2_buckets": [{ "binding": "LABELS", "bucket_name": "luora-labels" }],
 
   // Keep in sync with CRON_JOBS in src/worker/consumer.ts
-  "triggers": { "crons": ["*/3 * * * *", "*/2 * * * *", "15 */2 * * *", "30 2 * * *"] },
+  "triggers": { "crons": ["*/3 * * * *", "*/2 * * * *", "15 */2 * * *", "30 2 * * *", "*/15 * * * *"] },
 
   // Secrets (wrangler secret put): ENCRYPTION_KEY, ADMIN_EMAIL, ADMIN_PASSWORD
   "vars": {

@@ -15,6 +15,7 @@ export const JOBS = {
   listingsImport: 'listings-import',
   stockPush: 'stock-push',
   stockReconcile: 'stock-reconcile',
+  photoBackfill: 'photo-backfill',
 } as const;
 
 export interface JobPayloads {
@@ -29,6 +30,7 @@ export interface JobPayloads {
   [JOBS.listingsImport]: { accountId: string };
   [JOBS.stockPush]: { accountId: string };
   [JOBS.stockReconcile]: Record<string, never>;
+  [JOBS.photoBackfill]: Record<string, never>;
 }
 
 export type JobName = keyof JobPayloads;
@@ -65,6 +67,7 @@ export const RETRY_POLICY: Record<JobName, { retries: number; delaySeconds: numb
   [JOBS.listingsImport]: { retries: 1, delaySeconds: 60 },
   [JOBS.stockPush]: { retries: 3, delaySeconds: 60 },
   [JOBS.stockReconcile]: { retries: 0, delaySeconds: 0 },
+  [JOBS.photoBackfill]: { retries: 0, delaySeconds: 0 },
 };
 
 /** A singleton lock is dropped after this long even if its job never reports back. */

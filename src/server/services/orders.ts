@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { getDb, insertStatements, type Tx } from '../db/client';
 import {
   marketplaceAccounts,
@@ -241,6 +241,42 @@ export async function refreshOrder(orderId: string): Promise<void> {
   const fresh = await getMarketplaceAdapter(account).getOrder(order.externalId);
   if (!fresh) throw new Error('The marketplace no longer returns this order');
   await upsertOrders(account, [fresh]);
+}
+
+const PHOTO_BACKFILL_LIMIT = 20;
+
+/**
+ * Retries photos for order items that still have none: the marketplace's per-item image
+ * lookup (e.g. Allegro's offer photo, which is a separate call per offer) can fail or get
+ * rate-limited during a big sync and is never retried by the regular order sync afterwards,
+ * since that only revisits orders with new marketplace events.
+ */
+export async function backfillPhotos(limit = PHOTO_BACKFILL_LIMIT): Promise<{ checked: number; refreshed: number }> {
+  const db = getDb();
+  const rows = await db
+    .selectDistinct({ orderId: orderItems.orderId })
+    .from(orderItems)
+    .innerJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(
+      and(
+        isNull(orderItems.imageUrl),
+        or(isNotNull(orderItems.sku), isNotNull(orderItems.externalProductId)),
+        ne(orders.status, 'cancelled'),
+      ),
+    )
+    .orderBy(desc(orders.placedAt))
+    .limit(limit);
+
+  let refreshed = 0;
+  for (const { orderId } of rows) {
+    try {
+      await refreshOrder(orderId);
+      refreshed++;
+    } catch (err) {
+      console.error(`[photo-backfill] ${orderId}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return { checked: rows.length, refreshed };
 }
 
 export async function loadOrder(orderId: string): Promise<Order> {
