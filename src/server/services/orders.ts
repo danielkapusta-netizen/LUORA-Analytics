@@ -250,6 +250,25 @@ export async function refreshOrder(orderId: string): Promise<void> {
   await upsertOrders(account, [fresh]);
 }
 
+const LOCKER_METHOD = /paczkomat|packstation|parcel.?locker/i;
+
+/**
+ * For automatic labels: an order whose buyer chose a Paczkomat must never fall through to a
+ * courier rule just because its locker code is missing. Re-reads it from the marketplace once;
+ * if the code is still missing, stops with a message instead of guessing.
+ * Allegro is skipped: Allegro Delivery ships with the buyer's own method and point.
+ */
+export async function withPickupPoint(order: Order): Promise<Order> {
+  if (order.pickupPointId || order.marketplace === 'allegro') return order;
+  if (!LOCKER_METHOD.test(`${order.deliveryMethodId ?? ''} ${order.deliveryMethodName ?? ''}`)) return order;
+  await refreshOrder(order.id);
+  const fresh = await loadOrder(order.id);
+  if (!fresh.pickupPointId) {
+    throw new Error(`The buyer chose "${order.deliveryMethodName}" but ${order.marketplace} sent no Paczkomat code. Enter it in the full order.`);
+  }
+  return fresh;
+}
+
 const BACKFILL_LIMIT = 20;
 
 /**

@@ -27,6 +27,15 @@ const FAILED_STATUSES = new Set(['canceled', 'cancelled', 'expired']);
 /** ShipX sending methods that require `custom_attributes.dropoff_point`. */
 const NEEDS_DROPOFF_POINT = new Set(['parcel_locker', 'pok', 'courier_pok']);
 
+/**
+ * Dropping parcels at a Paczkomat only works for locker parcels: ShipX rejects it for courier
+ * services ("unavailable_for_service"), so those are picked up by the courier instead.
+ */
+export function sendingMethodFor(service: string, settings: CarrierSettings): string {
+  const method = settings.sendingMethod ?? 'dispatch_order';
+  return method === 'parcel_locker' && service !== 'inpost_locker_standard' ? 'dispatch_order' : method;
+}
+
 /** ShipX statuses that mean the parcel reached the buyer or is waiting for them. */
 function mapTrackingStatus(status: string): DeliveryStatus {
   if (status === 'delivered') return 'delivered';
@@ -41,7 +50,8 @@ function person(address: Pick<Address, 'name' | 'company' | 'phone' | 'email'>) 
   return {
     company_name: address.company || undefined,
     first_name: first || undefined,
-    last_name: rest.join(' ') || undefined,
+    // ShipX requires a last name; a one-word name is sent as both.
+    last_name: rest.join(' ') || first || undefined,
     email: address.email || undefined,
     phone: normalizePhone(address.phone),
   };
@@ -64,7 +74,7 @@ export function buildShipxPayload(req: ShipmentRequest, settings: CarrierSetting
   // InPost requires insurance of at least the cash-on-delivery amount.
   const insurance = Math.max(req.insuranceAmount ? Number(req.insuranceAmount) : 0, cod);
   const sender: SenderSettings = req.sender;
-  const sendingMethod = settings.sendingMethod ?? 'dispatch_order';
+  const sendingMethod = sendingMethodFor(req.service, settings);
 
   return {
     receiver: { ...person(req.receiver), address: locker ? undefined : shipxAddress(req.receiver) },
@@ -123,7 +133,7 @@ export class InpostAdapter implements CarrierAdapter {
     if (req.service === 'inpost_locker_standard' && !req.pickupPointId) {
       return { state: 'failed', externalId: '', error: 'Parcel locker service needs a pickup point (Paczkomat) code' };
     }
-    const sendingMethod = this.settings.sendingMethod ?? 'dispatch_order';
+    const sendingMethod = sendingMethodFor(req.service, this.settings);
     if (NEEDS_DROPOFF_POINT.has(sendingMethod) && !this.settings.dropoffPoint) {
       return { state: 'failed', externalId: '', error: 'InPost needs the Paczkomat you drop parcels at: set "Drop-off point" in Settings → Integrations → InPost' };
     }

@@ -23,7 +23,7 @@ import type { LabelFormat, LabelSize, ParcelSpec } from '../integrations/types';
 import { enqueue, JOBS } from '../jobs/queue';
 import { getCarrierAdapter, loadCarrierAccount, withConfigured } from './accounts';
 import { logEvent } from './events';
-import { loadOrder } from './orders';
+import { loadOrder, withPickupPoint } from './orders';
 import { carrierSupportsOrder, chooseRoute, type RouteDecision } from './routing';
 import { changeStatus } from './workflow';
 
@@ -450,7 +450,14 @@ export async function createBatch(orderIds: string[], userId: string): Promise<s
   const [batch] = await db.insert(shipmentBatches).values({ createdBy: userId, total: selected.length }).returning({ id: shipmentBatches.id });
 
   const skipped: { orderId: string; reason: string }[] = [];
-  for (const order of selected) {
+  for (const selectedOrder of selected) {
+    let order: Order;
+    try {
+      order = await withPickupPoint(selectedOrder);
+    } catch (err) {
+      skipped.push({ orderId: selectedOrder.id, reason: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
     const route = routeOrder(order, data);
     if (!route) {
       skipped.push({ orderId: order.id, reason: 'No shipping rule with a working carrier matches this order' });

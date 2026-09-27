@@ -2,7 +2,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { allegroPhone, AllegroShippingAdapter, buildCreateCommand } from '@/server/integrations/carriers/allegro-shipping/adapter';
-import { buildShipxPayload, InpostAdapter } from '@/server/integrations/carriers/inpost/adapter';
+import { buildShipxPayload, InpostAdapter, sendingMethodFor } from '@/server/integrations/carriers/inpost/adapter';
 import type { ShipmentRequest } from '@/server/integrations/carriers/types';
 import { AllegroClient, type AllegroCredentials } from '@/server/integrations/marketplaces/allegro/client';
 
@@ -44,7 +44,20 @@ describe('InPost ShipX', () => {
     expect(p.receiver.address).toMatchObject({ street: 'ul. Długa', building_number: '5/3' });
     expect(p.cod).toEqual({ amount: 199.9, currency: 'PLN' });
     expect(p.insurance).toEqual({ amount: 199.9, currency: 'PLN' });
-    expect(p.custom_attributes.sending_method).toBe('parcel_locker');
+    // ShipX rejects parcel_locker for courier services ("unavailable_for_service").
+    expect(p.custom_attributes).toEqual({ sending_method: 'dispatch_order' });
+  });
+
+  it('sends a one-word recipient name as both first and last name (ShipX requires last_name)', () => {
+    const p = buildShipxPayload({ ...request, receiver: { ...request.receiver, name: 'Kowalski' } }, {});
+    expect(p.receiver).toMatchObject({ first_name: 'Kowalski', last_name: 'Kowalski' });
+  });
+
+  it('drops only locker parcels at the Paczkomat; courier parcels are picked up', () => {
+    const settings = { sendingMethod: 'parcel_locker', dropoffPoint: 'ZOF01M' };
+    expect(sendingMethodFor('inpost_locker_standard', settings)).toBe('parcel_locker');
+    expect(sendingMethodFor('inpost_courier_standard', settings)).toBe('dispatch_order');
+    expect(sendingMethodFor('inpost_courier_standard', { sendingMethod: 'pop' })).toBe('pop');
   });
 
   it('sends the drop-off Paczkomat when parcels are dropped at a locker', () => {

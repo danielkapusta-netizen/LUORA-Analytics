@@ -13,6 +13,7 @@ import {
   addNote,
   assignOrder,
   loadOrder,
+  withPickupPoint,
   refreshOrder,
   setTags,
   updateShippingDetails,
@@ -230,7 +231,7 @@ export async function retryTrackingAction(orderId: string, shipmentId: string): 
 export async function quickLabelAction(orderId: string): Promise<ActionResult> {
   const user = await requireUser();
   return attempt(async () => {
-    const order = await loadOrder(orderId);
+    const order = await withPickupPoint(await loadOrder(orderId));
     const data = await loadRoutingData();
     const route = routeOrder(order, data);
     if (!route) throw new ShippingError('No shipping rule matches this order. Open the full order to choose a carrier.');
