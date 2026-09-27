@@ -17,6 +17,7 @@ export const miraklOrderSchema = z.object({
   shipping_pudo_id: z.string().nullish(),
   payment_type: z.string().nullish(),
   customer_notification_email: z.string().nullish(),
+  order_additional_fields: z.array(z.object({ code: z.string(), value: z.string().nullish() })).nullish(),
   customer: z.object({
     firstname: z.string().nullish(),
     lastname: z.string().nullish(),
@@ -65,6 +66,12 @@ export function toAlpha2(code: string | null | undefined): string {
   return upper.length === 3 ? (ALPHA3_TO_ALPHA2[upper] ?? upper.slice(0, 2)) : upper;
 }
 
+/** Empik leaves `shipping_pudo_id` empty and sends the buyer's Paczkomat as the "delivery-point-name" order field. */
+function pickupPoint(o: MiraklOrder): string | null {
+  const field = o.order_additional_fields?.find((f) => f.code === 'delivery-point-name')?.value;
+  return o.shipping_pudo_id || field?.trim().toUpperCase() || null;
+}
+
 function money(value: number): string {
   return value.toFixed(2);
 }
@@ -101,7 +108,7 @@ export function mapMiraklOrder(raw: unknown): NormalizedOrder {
     },
     deliveryMethodId: o.shipping_type_code ?? null,
     deliveryMethodName: o.shipping_type_label ?? null,
-    pickupPointId: o.shipping_pudo_id ?? null,
+    pickupPointId: pickupPoint(o),
     codAmount: cod ? money(o.total_price) : null,
     totalAmount: money(o.total_price),
     shippingAmount: o.shipping_price != null ? money(o.shipping_price) : null,

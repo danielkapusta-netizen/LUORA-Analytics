@@ -24,6 +24,9 @@ interface ShipxShipment {
 
 const FAILED_STATUSES = new Set(['canceled', 'cancelled', 'expired']);
 
+/** ShipX sending methods that require `custom_attributes.dropoff_point`. */
+const NEEDS_DROPOFF_POINT = new Set(['parcel_locker', 'pok', 'courier_pok']);
+
 /** ShipX statuses that mean the parcel reached the buyer or is waiting for them. */
 function mapTrackingStatus(status: string): DeliveryStatus {
   if (status === 'delivered') return 'delivered';
@@ -61,6 +64,7 @@ export function buildShipxPayload(req: ShipmentRequest, settings: CarrierSetting
   // InPost requires insurance of at least the cash-on-delivery amount.
   const insurance = Math.max(req.insuranceAmount ? Number(req.insuranceAmount) : 0, cod);
   const sender: SenderSettings = req.sender;
+  const sendingMethod = settings.sendingMethod ?? 'dispatch_order';
 
   return {
     receiver: { ...person(req.receiver), address: locker ? undefined : shipxAddress(req.receiver) },
@@ -82,7 +86,8 @@ export function buildShipxPayload(req: ShipmentRequest, settings: CarrierSetting
     reference: req.reference.slice(0, 100),
     custom_attributes: {
       target_point: locker ? req.pickupPointId ?? undefined : undefined,
-      sending_method: settings.sendingMethod ?? 'dispatch_order',
+      sending_method: sendingMethod,
+      dropoff_point: sendingMethod !== 'dispatch_order' ? settings.dropoffPoint || undefined : undefined,
     },
     cod: cod > 0 ? { amount: cod, currency: req.currency } : undefined,
     insurance: insurance > 0 ? { amount: insurance, currency: req.currency } : undefined,
@@ -117,6 +122,10 @@ export class InpostAdapter implements CarrierAdapter {
   async createShipment(req: ShipmentRequest): Promise<ShipmentStatus> {
     if (req.service === 'inpost_locker_standard' && !req.pickupPointId) {
       return { state: 'failed', externalId: '', error: 'Parcel locker service needs a pickup point (Paczkomat) code' };
+    }
+    const sendingMethod = this.settings.sendingMethod ?? 'dispatch_order';
+    if (NEEDS_DROPOFF_POINT.has(sendingMethod) && !this.settings.dropoffPoint) {
+      return { state: 'failed', externalId: '', error: 'InPost needs the Paczkomat you drop parcels at: set "Drop-off point" in Settings → Integrations → InPost' };
     }
     const shipment = await this.call<ShipxShipment>('POST', `/v1/organizations/${this.creds.organizationId}/shipments`, {
       body: buildShipxPayload(req, this.settings),

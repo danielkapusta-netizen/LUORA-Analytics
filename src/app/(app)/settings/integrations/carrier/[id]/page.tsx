@@ -65,6 +65,9 @@ export default async function CarrierAccountPage({ params, searchParams }: { par
                       <option value="pop">I drop them at a PaczkoPunkt</option>
                     </Select>
                   </Field>
+                  <Field label="Drop-off point" hint="The Paczkomat or PaczkoPunkt where you drop parcels, e.g. ZOF01M. Required when you drop them off yourself.">
+                    <Input name="dropoffPoint" defaultValue={s.dropoffPoint ?? ''} placeholder="e.g. ZOF01M" />
+                  </Field>
                 </div>
                 <Checkbox name="sandbox" label="Use the ShipX sandbox" defaultChecked={pub.sandbox === true} />
               </fieldset>

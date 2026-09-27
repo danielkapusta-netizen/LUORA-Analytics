@@ -154,6 +154,7 @@ export async function saveCarrierAction(id: string | null, _prev: ActionResult, 
   if (type === 'inpost') {
     credentials = { ...secrets(fd, ['apiToken']), organizationId: text(fd, 'organizationId'), sandbox: bool(fd, 'sandbox') };
     settings.sendingMethod = text(fd, 'sendingMethod') || 'dispatch_order';
+    settings.dropoffPoint = text(fd, 'dropoffPoint').replace(/\s/g, '').toUpperCase() || undefined;
   } else {
     settings.codIban = text(fd, 'codIban').replace(/\s/g, '') || undefined;
     settings.codOwnerName = text(fd, 'codOwnerName') || undefined;
@@ -176,6 +177,9 @@ export async function saveCarrierAction(id: string | null, _prev: ActionResult, 
       throw new Error('Fill in the whole sender address, phone and email');
     }
     if (type === 'allegro_shipping' && !text(fd, 'marketplaceAccountId')) throw new Error('Choose the Allegro account to ship with');
+    if (type === 'inpost' && settings.sendingMethod === 'parcel_locker' && !settings.dropoffPoint) {
+      throw new Error('Enter the drop-off point: the Paczkomat where you drop parcels (e.g. ZOF01M)');
+    }
     savedId = await saveCarrierAccount({
       id: id ?? undefined,
       type,

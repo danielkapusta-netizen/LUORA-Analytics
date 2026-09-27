@@ -31,6 +31,20 @@ describe('mapMiraklOrder', () => {
     ]);
   });
 
+  it('reads the buyer’s Paczkomat from the "delivery-point-name" field when shipping_pudo_id is empty', () => {
+    const o = mapMiraklOrder({
+      ...order,
+      shipping_pudo_id: null,
+      shipping_type_code: 'PACKSTATION',
+      order_additional_fields: [
+        { code: 'order-type', type: 'LIST', value: 'Premium' },
+        { code: 'delivery-point-name', type: 'STRING', value: ' waw190m ' },
+      ],
+    });
+    expect(o.pickupPointId).toBe('WAW190M');
+    expect(mapMiraklOrder({ ...order, shipping_pudo_id: null }).pickupPointId).toBeNull();
+  });
+
   it('is not shippable until accepted and paid', () => {
     expect(mapMiraklOrder({ ...order, order_state: 'WAITING_ACCEPTANCE' }).readyToShip).toBe(false);
     expect(mapMiraklOrder({ ...order, order_state: 'CANCELED' }).cancelled).toBe(true);

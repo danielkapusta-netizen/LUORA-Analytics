@@ -47,6 +47,18 @@ describe('InPost ShipX', () => {
     expect(p.custom_attributes.sending_method).toBe('parcel_locker');
   });
 
+  it('sends the drop-off Paczkomat when parcels are dropped at a locker', () => {
+    const p = buildShipxPayload(request, { sendingMethod: 'parcel_locker', dropoffPoint: 'ZOF01M' });
+    expect(p.custom_attributes).toEqual({ target_point: 'KRA010', sending_method: 'parcel_locker', dropoff_point: 'ZOF01M' });
+    expect(buildShipxPayload(request, { sendingMethod: 'dispatch_order', dropoffPoint: 'ZOF01M' }).custom_attributes.dropoff_point).toBeUndefined();
+  });
+
+  it('refuses to drop at a locker without a drop-off point, before calling InPost', async () => {
+    const locker = new InpostAdapter({ apiToken: 'tok', organizationId: '42', sandbox: true }, { sendingMethod: 'parcel_locker' });
+    const status = await locker.createShipment(request);
+    expect(status).toMatchObject({ state: 'failed', error: expect.stringContaining('Drop-off point') });
+  });
+
   it('refuses a locker label without a pickup point before calling InPost', async () => {
     const status = await adapter.createShipment({ ...request, pickupPointId: null });
     expect(status.state).toBe('failed');

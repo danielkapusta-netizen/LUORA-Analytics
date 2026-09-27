@@ -98,6 +98,8 @@ export interface CarrierSettings {
   labelSize?: 'A4' | 'A6';
   /** InPost: "dispatch_order" (courier pickup) or "parcel_locker" (you drop parcels at a locker). */
   sendingMethod?: string;
+  /** InPost: Paczkomat or point where you drop parcels off (e.g. "ZOF01M"); required by ShipX for parcel_locker, pok and courier_pok. */
+  dropoffPoint?: string;
   /** Allegro: bank account for cash on delivery payouts. */
   codIban?: string;
   codOwnerName?: string;
