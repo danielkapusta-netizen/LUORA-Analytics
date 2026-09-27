@@ -6,6 +6,7 @@ import {
   carrierAccounts,
   labelFiles,
   orderEvents,
+  orderItems,
   orders,
   packagePresets,
   shipmentBatches,
@@ -84,6 +85,27 @@ export interface ShipmentInput {
   batchId?: string | null;
 }
 
+/** InPost and Allegro Delivery both accept at most 100 characters. */
+const REFERENCE_MAX = 100;
+const NAME_MAX = 30;
+
+function shortName(name: string): string {
+  const clean = name.replace(/\s+/g, ' ').trim();
+  if (clean.length <= NAME_MAX) return clean;
+  const cut = clean.slice(0, NAME_MAX);
+  return cut.slice(0, cut.lastIndexOf(' ') > 10 ? cut.lastIndexOf(' ') : NAME_MAX).trim();
+}
+
+/**
+ * Label reference: order number, then what is in the parcel, e.g.
+ * "40102409712336: 2x LUO-NTB-A5, 1x Anua Heartleaf toner". SKU when known, else a shortened name.
+ */
+export function labelReference(orderNumber: string, items: { sku: string | null; name: string; quantity: number }[]): string {
+  const products = items.map((i) => `${i.quantity}x ${i.sku || shortName(i.name)}`).join(', ');
+  const ref = products ? `${orderNumber}: ${products}` : orderNumber;
+  return ref.length > REFERENCE_MAX ? `${ref.slice(0, REFERENCE_MAX - 3).trimEnd()}...` : ref;
+}
+
 /** D1/SQLite reports unique index violations only in the error message. */
 function isUniqueViolation(err: unknown): boolean {
   for (let e = err as { message?: string; cause?: unknown } | undefined; e; e = e.cause as typeof e) {
@@ -108,6 +130,12 @@ export async function requestShipment(input: ShipmentInput, userId: string | nul
   }
   if (!carrier.sender) throw new ShippingError(`${carrier.name} has no sender address. Add it in Settings → Integrations.`);
 
+  const items = await db
+    .select({ sku: orderItems.sku, name: orderItems.name, quantity: orderItems.quantity })
+    .from(orderItems)
+    .where(eq(orderItems.orderId, order.id))
+    .orderBy(asc(orderItems.externalLineId));
+
   let id: string;
   try {
     const [row] = await db
@@ -118,7 +146,7 @@ export async function requestShipment(input: ShipmentInput, userId: string | nul
         carrier: carrier.type,
         service: input.service,
         parcel: input.parcel,
-        options: { reference: order.externalNumber, ...input.options },
+        options: { reference: labelReference(order.externalNumber, items), ...input.options },
         labelFormat: input.labelFormat ?? carrier.settings.labelFormat ?? 'pdf',
         labelSize: input.labelSize ?? carrier.settings.labelSize ?? 'A6',
         batchId: input.batchId ?? null,

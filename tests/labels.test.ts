@@ -1,7 +1,7 @@
 import { PDFDocument } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import { MockCarrierAdapter } from '@/server/integrations/carriers/mock/adapter';
-import { mergeLabels } from '@/server/services/shipping';
+import { labelReference, mergeLabels } from '@/server/services/shipping';
 import { marketplaceQuantity, pendingUpdatesFor } from '@/server/services/inventory';
 
 async function mockLabel(id: string) {
@@ -37,6 +37,18 @@ describe('labels', () => {
 
   it('refuses an empty merge', async () => {
     await expect(mergeLabels([])).rejects.toThrow('No labels');
+  });
+
+  it('puts the order number and product list in the label reference, within 100 characters', () => {
+    expect(labelReference('40102409712336', [
+      { sku: 'LUO-NTB-A5', name: 'Notebook', quantity: 2 },
+      { sku: null, name: 'Anua Heartleaf 77% Soothing Toner 250 ml koreański tonik', quantity: 1 },
+    ])).toBe('40102409712336: 2x LUO-NTB-A5, 1x Anua Heartleaf 77% Soothing');
+    expect(labelReference('#1042', [])).toBe('#1042');
+    const long = labelReference('6B7C4270', Array.from({ length: 8 }, (_, i) => ({ sku: null, name: `Product number ${i} with a long name`, quantity: 1 })));
+    expect(long.length).toBe(100);
+    expect(long.startsWith('6B7C4270: 1x Product number 0')).toBe(true);
+    expect(long.endsWith('...')).toBe(true);
   });
 });
 
