@@ -25,7 +25,7 @@ import { getCarrierAdapter, loadCarrierAccount, withConfigured } from './account
 import { logEvent } from './events';
 import { loadOrder, withPickupPoint } from './orders';
 import { carrierSupportsOrder, chooseRoute, type RouteDecision } from './routing';
-import { changeStatus } from './workflow';
+import { changeStatus, shipWhenReady } from './workflow';
 
 /** Give up polling a pending shipment after this many attempts. */
 const MAX_POLLS = 40;
@@ -374,6 +374,13 @@ export async function setPacked(shipmentId: string, packed: boolean, userId: str
     .returning({ orderId: shipments.orderId });
   if (!row) throw new ShippingError('Shipment not found');
   await logEvent(db, row.orderId, 'edit', packed ? 'Parcel marked as packed' : 'Parcel marked as not packed', { userId });
+  if (packed) {
+    await shipWhenReady(db, row.orderId, 'parcel packed and tracking sent', userId);
+  } else {
+    // Unticked by mistake: put the order back on the To do list.
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, row.orderId));
+    if (order?.status === 'shipped') await changeStatus(db, row.orderId, 'label_created', { reason: 'parcel not packed yet', userId, force: true });
+  }
 }
 
 /** Manually re-checks a pending shipment. */

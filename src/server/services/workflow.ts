@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { Tx } from '../db/client';
-import { orders, type OrderStatus } from '../db/schema';
+import { orders, shipments, type OrderStatus } from '../db/schema';
 import { enqueue, JOBS } from '../jobs/queue';
 import { logEvent } from './events';
 import { applyOrderStock, restockOrder, scheduleStockPush } from './inventory';
@@ -34,6 +34,40 @@ export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
 }
 
 export class TransitionError extends Error {}
+
+/** Statuses in which an order is still on the "To do" list. */
+const OPEN_STATUSES: OrderStatus[] = ['new', 'processing', 'label_created', 'on_hold'];
+
+/** The order's current label, if it has one that was created. */
+async function liveShipment(db: Tx, orderId: string) {
+  const [row] = await db
+    .select()
+    .from(shipments)
+    .where(and(eq(shipments.orderId, orderId), eq(shipments.state, 'created')))
+    .orderBy(desc(shipments.createdAt))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * An order with a label becomes "Shipped" only once its tracking has reached the marketplace
+ * and staff have ticked "Packed", so it stays on the To do list until the parcel is ready.
+ * Returns true when the order was moved to shipped.
+ */
+export async function shipWhenReady(db: Tx, orderId: string, reason: string, userId?: string | null): Promise<boolean> {
+  const shipment = await liveShipment(db, orderId);
+  if (!shipment?.trackingPushedAt || !shipment.packedAt) return false;
+  const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId));
+  if (!order || !OPEN_STATUSES.includes(order.status)) return false;
+  await changeStatus(db, orderId, 'shipped', { reason, userId, force: true });
+  return true;
+}
+
+/** True when the order has a label that is not packed yet (it must stay on the To do list). */
+export async function awaitingPacking(db: Tx, orderId: string): Promise<boolean> {
+  const shipment = await liveShipment(db, orderId);
+  return Boolean(shipment && !shipment.packedAt);
+}
 
 /**
  * Moves an order to a new status and runs the side effects:

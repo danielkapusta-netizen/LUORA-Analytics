@@ -107,7 +107,18 @@ describe('order flow (D1)', { timeout: 60_000 }, () => {
     expect(shipment.trackingNumber).toMatch(/^6\d{23}$/);
     expect(shipment.trackingPushedAt).not.toBeNull();
     expect(await m.shipping.getLabel(id)).toMatchObject({ format: 'pdf' });
-    const [updated] = await m.db.getDb().select().from(m.schema.orders).where(m.orm.eq(m.schema.orders.id, order.id));
+    const readOrder = async () => (await m.db.getDb().select().from(m.schema.orders).where(m.orm.eq(m.schema.orders.id, order.id)))[0];
+    // Tracking is on the marketplace, but the order stays on To do until the parcel is packed.
+    expect((await readOrder()).status).toBe('label_created');
+    // A marketplace sync reporting it shipped (our own tracking push) doesn't skip packing either.
+    const accounts = await import('@/server/services/accounts');
+    const account = await accounts.loadMarketplaceAccount(order.accountId);
+    const fresh = (await accounts.getMarketplaceAdapter(account).getOrder(order.externalId))!;
+    await m.orders.upsertOrders(account, [{ ...fresh, fulfilled: true }]);
+    expect((await readOrder()).status).toBe('label_created');
+
+    await m.shipping.setPacked(id, true, await adminId());
+    const updated = await readOrder();
     expect(updated.status).toBe('shipped');
     expect(updated.shippedAt).not.toBeNull();
   });
@@ -115,13 +126,17 @@ describe('order flow (D1)', { timeout: 60_000 }, () => {
   it('marks a parcel as packed and back, logging it on the order', async () => {
     const [shipment] = await m.db.getDb().select().from(m.schema.shipments).where(m.orm.eq(m.schema.shipments.state, 'created')).limit(1);
     const read = async () => (await m.db.getDb().select().from(m.schema.shipments).where(m.orm.eq(m.schema.shipments.id, shipment.id)))[0];
+    const orderStatus = async () => (await m.db.getDb().select().from(m.schema.orders).where(m.orm.eq(m.schema.orders.id, shipment.orderId)))[0].status;
     const userId = await adminId();
-    expect(shipment.packedAt).toBeNull();
+    expect(shipment.packedAt).toBeInstanceOf(Date);
+    // Unticking puts a shipped order back on the To do list.
+    await m.shipping.setPacked(shipment.id, false, userId);
+    expect(await read()).toMatchObject({ packedAt: null, packedBy: null });
+    expect(await orderStatus()).toBe('label_created');
     await m.shipping.setPacked(shipment.id, true, userId);
     expect(await read()).toMatchObject({ packedBy: userId });
     expect((await read()).packedAt).toBeInstanceOf(Date);
-    await m.shipping.setPacked(shipment.id, false, userId);
-    expect(await read()).toMatchObject({ packedAt: null, packedBy: null });
+    expect(await orderStatus()).toBe('shipped');
     const events = await m.db.getDb().select().from(m.schema.orderEvents).where(m.orm.eq(m.schema.orderEvents.orderId, shipment.orderId));
     expect(events.map((e) => e.message)).toEqual(expect.arrayContaining(['Parcel marked as packed', 'Parcel marked as not packed']));
     await expect(m.shipping.setPacked('missing', true, userId)).rejects.toThrow('Shipment not found');

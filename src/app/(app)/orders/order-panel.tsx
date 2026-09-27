@@ -9,6 +9,7 @@ import { buttonClass, Card } from '@/components/ui';
 import { CARRIER_LABELS, cn, formatDate, formatMoney, SERVICE_LABELS } from '@/lib/utils';
 import { getOrderDetail } from '@/server/services/orders';
 import { loadRoutingData, routeOrder } from '@/server/services/shipping';
+import { PackedToggle } from '../shipments/packed-toggle';
 import { pollShipmentAction, quickLabelAction, retryTrackingAction } from './actions';
 
 function InfoRow({ icon: Icon, label, children }: { icon: typeof Store; label: string; children: React.ReactNode }) {
@@ -116,6 +117,12 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
               ) : (
                 <span />
               )}
+            </div>
+          )}
+          {live?.state === 'created' && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-slate-500">{live.packedAt ? 'Packed – moves to Shipped' : 'Tick when packed; stays in To do until then'}</span>
+              <PackedToggle shipmentId={live.id} packed={Boolean(live.packedAt)} />
             </div>
           )}
           {live?.error && <p className="text-xs text-red-700">{live.error}</p>}

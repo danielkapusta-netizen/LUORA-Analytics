@@ -20,6 +20,7 @@ export async function setPackedAction(shipmentId: string, packed: boolean): Prom
   return attempt(async () => {
     await setPacked(shipmentId, packed, user.id);
     revalidatePath('/shipments', 'layout');
+    revalidatePath('/orders', 'layout');
     return packed ? 'Packed' : 'Not packed';
   });
 }

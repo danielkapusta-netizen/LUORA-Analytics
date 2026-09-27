@@ -5,7 +5,7 @@ import { enqueue, JOBS } from '../jobs/queue';
 import { getCarrierAdapter, getMarketplaceAdapter, loadMarketplaceAccount } from './accounts';
 import { logEvent } from './events';
 import { loadOrder, orderRef } from './orders';
-import { changeStatus } from './workflow';
+import { changeStatus, shipWhenReady } from './workflow';
 
 const CARRIER_NAMES = { inpost: 'InPost', allegro_shipping: 'Allegro Delivery' } as const;
 
@@ -35,7 +35,7 @@ export async function runPushTracking(shipmentId: string): Promise<void> {
 
   await db.update(shipments).set({ trackingPushedAt: new Date(), trackingPushError: null }).where(eq(shipments.id, shipment.id));
   await logEvent(db, order.id, 'tracking', `Tracking ${shipment.trackingNumber} sent to ${account.name}`);
-  await changeStatus(db, order.id, 'shipped', { reason: 'tracking sent to the marketplace', force: true });
+  await shipWhenReady(db, order.id, 'tracking sent and parcel packed');
 }
 
 /** Manually re-queues a tracking push that failed. */

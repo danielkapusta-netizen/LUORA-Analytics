@@ -17,7 +17,7 @@ import type { Address, NormalizedOrder, OrderRef } from '../integrations/types';
 import { getMarketplaceAdapter, loadMarketplaceAccount } from './accounts';
 import { logEvent } from './events';
 import { applyOrderStock, scheduleStockPush, stockCoversOrder } from './inventory';
-import { changeStatus } from './workflow';
+import { awaitingPacking, changeStatus } from './workflow';
 
 const MAX_ROUNDS_PER_SYNC = 20;
 
@@ -174,7 +174,8 @@ export async function upsertOrders(
       }
       if (n.cancelled && !['cancelled', 'shipped', 'delivered'].includes(existing.status)) {
         await changeStatus(tx, existing.id, 'cancelled', { reason: 'cancelled on the marketplace', force: true });
-      } else if (n.fulfilled && ['new', 'processing', 'label_created', 'on_hold'].includes(existing.status)) {
+      } else if (n.fulfilled && ['new', 'processing', 'label_created', 'on_hold'].includes(existing.status) && !(await awaitingPacking(tx, existing.id))) {
+        // Our own label marks the order shipped on the marketplace right away; it stays on To do until packed.
         await changeStatus(tx, existing.id, 'shipped', { reason: 'shipped on the marketplace', force: true });
       }
     })();
