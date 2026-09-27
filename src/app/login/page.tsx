@@ -1,4 +1,3 @@
-import { PackageCheck } from 'lucide-react';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/forms';
@@ -14,9 +13,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center justify-center gap-2">
-          <PackageCheck className="size-7 text-brand-600" />
-          <span className="text-xl font-semibold tracking-tight">Luora OS</span>
+        <div className="mb-6 flex items-center justify-center">
+          {/* eslint-disable-next-line @next/next/no-img-element -- no image optimiser on Workers */}
+          <img src="/logo-dark.png" alt="Luora" className="h-8 w-auto" />
         </div>
         <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
           <ActionForm action={loginAction} className="space-y-4" showOk={false}>

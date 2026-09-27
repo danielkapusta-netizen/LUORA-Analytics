@@ -1,6 +1,6 @@
 'use client';
 
-import { BarChart3, Boxes, LogOut, PackageCheck, Settings, ShoppingBag, Truck } from 'lucide-react';
+import { BarChart3, Boxes, LogOut, Settings, ShoppingBag, Truck } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
@@ -18,8 +18,8 @@ export function Nav({ userName, mock, logoutAction }: { userName: string; mock: 
   return (
     <aside className="no-print flex w-full shrink-0 flex-col bg-sidebar text-white md:sticky md:top-0 md:h-screen md:w-60">
       <div className="flex items-center gap-2 px-6 py-6">
-        <PackageCheck className="size-7 text-emerald-400" />
-        <span className="text-lg font-semibold tracking-tight">Luora OS</span>
+        {/* eslint-disable-next-line @next/next/no-img-element -- no image optimiser on Workers */}
+        <img src="/logo-light.png" alt="Luora" className="h-6 w-auto" />
         {mock && <span className="ml-auto rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">Demo</span>}
       </div>
       <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-1 md:flex-col md:gap-1.5 md:overflow-visible">

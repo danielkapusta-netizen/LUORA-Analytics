@@ -1,4 +1,4 @@
-import { ExternalLink, Mail, MapPin, Package, Phone, Printer, Store, Truck } from 'lucide-react';
+import { ExternalLink, MapPin, Package, Printer, Store, Truck, UserRound } from 'lucide-react';
 import Link from 'next/link';
 import { AutoRefresh } from '@/components/auto-refresh';
 import { MarketplaceBadge, ShipmentBadge, StatusBadge } from '@/components/badges';
@@ -68,16 +68,15 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium">{order.buyer.name}</p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {order.buyer.email && (
-              <a href={`mailto:${order.buyer.email}`} className={cn(buttonClass('secondary', 'sm'), 'h-7 bg-white')}>
-                <Mail className="size-3.5" /> Email
-              </a>
-            )}
-            {(order.buyer.phone || a.phone) && (
-              <a href={`tel:${order.buyer.phone ?? a.phone}`} className={cn(buttonClass('secondary', 'sm'), 'h-7 bg-white')}>
-                <Phone className="size-3.5" /> Call
-              </a>
+          <div className="mt-1.5 flex items-center gap-1.5 text-sm">
+            <UserRound className="size-3.5 shrink-0 text-slate-400" />
+            {a.name === order.buyer.name ? (
+              <span className="text-slate-500">Recipient is the buyer</span>
+            ) : (
+              <span>
+                <span className="text-slate-500">Ships to </span>
+                <span className="font-medium text-amber-700">{a.name}</span>
+              </span>
             )}
           </div>
         </div>

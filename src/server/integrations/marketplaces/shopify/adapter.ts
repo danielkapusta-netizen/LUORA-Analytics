@@ -47,7 +47,11 @@ const FULFILLMENT_CREATE = `mutation FulfillmentCreate($fulfillment: Fulfillment
 const VARIANTS_QUERY = `query Variants($first: Int!, $after: String) {
   productVariants(first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
-    nodes { id sku displayName inventoryQuantity inventoryItem { id } }
+    nodes {
+      id sku displayName inventoryQuantity inventoryItem { id }
+      image { url(transform: { maxWidth: 240 }) }
+      product { featuredImage { url(transform: { maxWidth: 240 }) } }
+    }
   }
 }`;
 
@@ -145,7 +149,15 @@ export class ShopifyAdapter implements MarketplaceAdapter {
       const data: {
         productVariants: {
           pageInfo: PageInfo;
-          nodes: { id: string; sku: string | null; displayName: string; inventoryQuantity: number | null; inventoryItem: { id: string } }[];
+          nodes: {
+            id: string;
+            sku: string | null;
+            displayName: string;
+            inventoryQuantity: number | null;
+            inventoryItem: { id: string };
+            image: { url: string } | null;
+            product: { featuredImage: { url: string } | null } | null;
+          }[];
         };
       } = await this.client.graphql(VARIANTS_QUERY, { first: 100, after });
       for (const v of data.productVariants.nodes) {
@@ -155,6 +167,7 @@ export class ShopifyAdapter implements MarketplaceAdapter {
           title: v.displayName,
           quantity: v.inventoryQuantity,
           ref: { inventoryItemId: v.inventoryItem.id },
+          imageUrl: v.image?.url ?? v.product?.featuredImage?.url ?? null,
         };
       }
       if (!data.productVariants.pageInfo.hasNextPage) return;

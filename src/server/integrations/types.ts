@@ -92,6 +92,7 @@ export interface Listing {
   quantity: number | null;
   /** Provider ids needed to update stock later (inventory item id, offer sku, ...). */
   ref: Record<string, string | number | null>;
+  imageUrl?: string | null;
 }
 
 export interface StockUpdate {

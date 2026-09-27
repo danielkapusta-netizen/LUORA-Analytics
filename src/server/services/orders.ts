@@ -156,6 +156,11 @@ export async function upsertOrders(
           .set({ imageUrl: item.imageUrl })
           .where(and(eq(orderItems.orderId, existing.id), eq(orderItems.externalLineId, item.externalLineId), isNull(orderItems.imageUrl)));
       }
+      // The marketplace (e.g. Allegro, Empik) may have no photo of its own; fall back to the product's.
+      await tx.run(sql`
+        update order_items set image_url = (select p.image_url from products p where p.sku = order_items.sku)
+        where order_id = ${existing.id} and image_url is null and sku is not null
+          and exists (select 1 from products p where p.sku = order_items.sku and p.image_url is not null)`);
 
       if (n.marketplaceStatus !== existing.marketplaceStatus) {
         await logEvent(tx, existing.id, 'sync', `Marketplace status: ${existing.marketplaceStatus} → ${n.marketplaceStatus}`);
@@ -176,9 +181,9 @@ async function itemStatements(tx: Tx, orderId: string, n: NormalizedOrder) {
   if (n.items.length === 0) return [];
   const skus = [...new Set(n.items.map((i) => i.sku).filter((s): s is string => Boolean(s)))];
   const known = skus.length
-    ? await tx.select({ id: products.id, sku: products.sku }).from(products).where(inArray(products.sku, skus))
+    ? await tx.select({ id: products.id, sku: products.sku, imageUrl: products.imageUrl }).from(products).where(inArray(products.sku, skus))
     : [];
-  const bySku = new Map(known.map((p) => [p.sku, p.id]));
+  const bySku = new Map(known.map((p) => [p.sku, p]));
   return insertStatements(
     tx,
     orderItems,
@@ -190,8 +195,9 @@ async function itemStatements(tx: Tx, orderId: string, n: NormalizedOrder) {
       quantity: i.quantity,
       unitPrice: i.unitPrice,
       externalProductId: i.externalProductId ?? null,
-      imageUrl: i.imageUrl ?? null,
-      productId: i.sku ? (bySku.get(i.sku) ?? null) : null,
+      // Allegro and Empik don't always send a photo; fall back to the product's (from Shopify).
+      imageUrl: i.imageUrl ?? (i.sku ? (bySku.get(i.sku)?.imageUrl ?? null) : null),
+      productId: i.sku ? (bySku.get(i.sku)?.id ?? null) : null,
     })),
   );
 }

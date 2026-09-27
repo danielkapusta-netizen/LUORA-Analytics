@@ -113,12 +113,17 @@ export async function importListings(accountId: string): Promise<{ listings: num
       const tx = db;
       let productId: string | null = null;
       if (listing.sku) {
-        const [product] = await tx.select({ id: products.id }).from(products).where(eq(products.sku, listing.sku));
-        if (product) productId = product.id;
-        else {
+        const [product] = await tx.select({ id: products.id, imageUrl: products.imageUrl }).from(products).where(eq(products.sku, listing.sku));
+        if (product) {
+          productId = product.id;
+          // Photos come from whichever marketplace has them first; don't overwrite one already stored.
+          if (listing.imageUrl && !product.imageUrl) {
+            await tx.update(products).set({ imageUrl: listing.imageUrl }).where(eq(products.id, product.id));
+          }
+        } else {
           const [inserted] = await tx
             .insert(products)
-            .values({ sku: listing.sku, name: listing.title, stock: Math.max(0, listing.quantity ?? 0) })
+            .values({ sku: listing.sku, name: listing.title, stock: Math.max(0, listing.quantity ?? 0), imageUrl: listing.imageUrl ?? null })
             .returning({ id: products.id });
           productId = inserted.id;
           created++;
@@ -157,6 +162,11 @@ export async function importListings(accountId: string): Promise<{ listings: num
   await db.run(sql`
     update order_items set product_id = (select p.id from products p where p.sku = order_items.sku)
     where product_id is null and sku is not null and exists (select 1 from products p where p.sku = order_items.sku)`);
+  // Fill in photos for order lines whose own marketplace (e.g. Allegro, Empik) has none.
+  await db.run(sql`
+    update order_items set image_url = (select p.image_url from products p where p.sku = order_items.sku)
+    where image_url is null and sku is not null
+      and exists (select 1 from products p where p.sku = order_items.sku and p.image_url is not null)`);
   return { listings: count, created, unmatched };
 }
 

@@ -315,6 +315,8 @@ export const products = sqliteTable('products', {
   name: text('name').notNull(),
   /** Master stock; every marketplace listing is set to this number. */
   stock: integer('stock').notNull().default(0),
+  /** Photo pulled from a marketplace listing (Shopify first), used to fill in order items with no photo of their own. */
+  imageUrl: text('image_url'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
