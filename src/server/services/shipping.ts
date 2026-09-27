@@ -87,21 +87,24 @@ export interface ShipmentInput {
 
 /** InPost and Allegro Delivery both accept at most 100 characters. */
 const REFERENCE_MAX = 100;
+/** Per-product name length when a parcel holds several products. */
 const NAME_MAX = 30;
 
-function shortName(name: string): string {
+function shortName(name: string, max: number): string {
   const clean = name.replace(/\s+/g, ' ').trim();
-  if (clean.length <= NAME_MAX) return clean;
-  const cut = clean.slice(0, NAME_MAX);
-  return cut.slice(0, cut.lastIndexOf(' ') > 10 ? cut.lastIndexOf(' ') : NAME_MAX).trim();
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max);
+  return cut.slice(0, cut.lastIndexOf(' ') > 10 ? cut.lastIndexOf(' ') : max).trim();
 }
 
 /**
- * Label reference: order number, then what is in the parcel, e.g.
- * "40102409712336: 2x LUO-NTB-A5, 1x Anua Heartleaf toner". SKU when known, else a shortened name.
+ * Label reference: order number, then the products in the parcel by name, e.g.
+ * "40102409712336: 1x Arencia Vitamin C Booster Shot rozświetlające serum". A single product
+ * gets the whole length; several are shortened so they all fit.
  */
-export function labelReference(orderNumber: string, items: { sku: string | null; name: string; quantity: number }[]): string {
-  const products = items.map((i) => `${i.quantity}x ${i.sku || shortName(i.name)}`).join(', ');
+export function labelReference(orderNumber: string, items: { name: string; quantity: number }[]): string {
+  const nameMax = items.length === 1 ? REFERENCE_MAX : NAME_MAX;
+  const products = items.map((i) => `${i.quantity}x ${shortName(i.name, nameMax)}`).join(', ');
   const ref = products ? `${orderNumber}: ${products}` : orderNumber;
   return ref.length > REFERENCE_MAX ? `${ref.slice(0, REFERENCE_MAX - 3).trimEnd()}...` : ref;
 }
@@ -131,7 +134,7 @@ export async function requestShipment(input: ShipmentInput, userId: string | nul
   if (!carrier.sender) throw new ShippingError(`${carrier.name} has no sender address. Add it in Settings → Integrations.`);
 
   const items = await db
-    .select({ sku: orderItems.sku, name: orderItems.name, quantity: orderItems.quantity })
+    .select({ name: orderItems.name, quantity: orderItems.quantity })
     .from(orderItems)
     .where(eq(orderItems.orderId, order.id))
     .orderBy(asc(orderItems.externalLineId));

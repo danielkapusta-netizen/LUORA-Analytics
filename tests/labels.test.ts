@@ -39,13 +39,16 @@ describe('labels', () => {
     await expect(mergeLabels([])).rejects.toThrow('No labels');
   });
 
-  it('puts the order number and product list in the label reference, within 100 characters', () => {
+  it('puts the order number and product names in the label reference, within 100 characters', () => {
+    expect(labelReference('40102409185604', [{ name: 'Arencia, Vitamin C Booster Shot rozświetlające serum 30 ml', quantity: 1 }])).toBe(
+      '40102409185604: 1x Arencia, Vitamin C Booster Shot rozświetlające serum 30 ml',
+    );
     expect(labelReference('40102409712336', [
-      { sku: 'LUO-NTB-A5', name: 'Notebook', quantity: 2 },
-      { sku: null, name: 'Anua Heartleaf 77% Soothing Toner 250 ml koreański tonik', quantity: 1 },
-    ])).toBe('40102409712336: 2x LUO-NTB-A5, 1x Anua Heartleaf 77% Soothing');
+      { name: 'Notebook', quantity: 2 },
+      { name: 'Anua Heartleaf 77% Soothing Toner 250 ml koreański tonik', quantity: 1 },
+    ])).toBe('40102409712336: 2x Notebook, 1x Anua Heartleaf 77% Soothing');
     expect(labelReference('#1042', [])).toBe('#1042');
-    const long = labelReference('6B7C4270', Array.from({ length: 8 }, (_, i) => ({ sku: null, name: `Product number ${i} with a long name`, quantity: 1 })));
+    const long = labelReference('6B7C4270', Array.from({ length: 8 }, (_, i) => ({ name: `Product number ${i} with a long name`, quantity: 1 })));
     expect(long.length).toBe(100);
     expect(long.startsWith('6B7C4270: 1x Product number 0')).toBe(true);
     expect(long.endsWith('...')).toBe(true);
