@@ -98,12 +98,35 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
           </li>
         ))}
       </ul>
+      <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
+        <span className="text-sm text-slate-500">Total{order.codAmount ? ' (cash on delivery)' : ''}</span>
+        <span className="text-base font-semibold tabular-nums">{formatMoney(order.totalAmount, order.currency)}</span>
+      </div>
 
-      {/* Total and actions */}
+      {/* Delivery method and actions */}
       <div className="mt-4 rounded-2xl bg-canvas p-4">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-500">Total{order.codAmount ? ' (cash on delivery)' : ''}</span>
-          <span className="text-lg font-semibold tabular-nums">{formatMoney(order.totalAmount, order.currency)}</span>
+        <div className="flex gap-3">
+          <Truck className="mt-0.5 size-4 shrink-0 text-slate-400" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs text-slate-400">Delivery</p>
+            <div className="mt-0.5 text-sm text-slate-800">
+              {live ? (
+                <>
+                  <span className="font-medium">{liveCarrier?.name ?? CARRIER_LABELS[live.carrier]}</span>
+                  {live.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[live.service] ?? live.service}</span>}
+                  {live.trackingNumber && <p className="mt-0.5 font-mono text-xs text-slate-500">{live.trackingNumber}</p>}
+                </>
+              ) : route && routeCarrier ? (
+                <>
+                  <span className="font-medium">{routeCarrier.name}</span>
+                  {route.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[route.service] ?? route.service}</span>}
+                </>
+              ) : (
+                <span className="text-slate-500">Not chosen yet</span>
+              )}
+              {order.deliveryMethodName && <p className="mt-0.5 text-xs text-slate-400">Buyer chose: {order.deliveryMethodName}</p>}
+            </div>
+          </div>
         </div>
 
         <div className="mt-4 space-y-2">
@@ -172,23 +195,6 @@ export async function OrderPanel({ orderId }: { orderId: string }) {
         <InfoRow icon={Hash} label="Order #">
           <span className="font-medium">{order.externalNumber}</span>
           <span className="text-slate-500"> · {formatDate(order.placedAt, false)}</span>
-        </InfoRow>
-        <InfoRow icon={Truck} label="Courier">
-          {live ? (
-            <>
-              <span className="font-medium">{liveCarrier?.name ?? CARRIER_LABELS[live.carrier]}</span>
-              {live.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[live.service] ?? live.service}</span>}
-              {live.trackingNumber && <p className="mt-0.5 font-mono text-xs text-slate-500">{live.trackingNumber}</p>}
-            </>
-          ) : route && routeCarrier ? (
-            <>
-              <span className="font-medium">{routeCarrier.name}</span>
-              {route.service !== 'buyer_choice' && <span className="text-slate-500"> · {SERVICE_LABELS[route.service] ?? route.service}</span>}
-            </>
-          ) : (
-            <span className="text-slate-500">Not chosen yet</span>
-          )}
-          {order.deliveryMethodName && <p className="mt-0.5 text-xs text-slate-400">Buyer chose: {order.deliveryMethodName}</p>}
         </InfoRow>
         <InfoRow icon={MapPin} label={order.pickupPointId ? 'Pickup point' : 'Ship to'}>
           {order.pickupPointId && <span className="font-medium">{order.pickupPointId} · </span>}
