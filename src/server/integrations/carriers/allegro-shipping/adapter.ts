@@ -51,6 +51,19 @@ function contact(a: { name: string; company?: string | null; street: string; pos
   };
 }
 
+/** Strips Polish and other diacritics ("ł" has no decomposed form, so it is mapped by hand). */
+function toAscii(text: string): string {
+  return text.replace(/ł/g, 'l').replace(/Ł/g, 'L').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Allegro accepts only letters, digits and "_/-" in referenceNumber, without diacritics, e.g.
+ * "6B7C4270: 1x Anua PDRN 100 + Hyaluron" → "6B7C4270_1x_Anua_PDRN_100_Hyaluron".
+ */
+export function allegroReferenceNumber(reference: string): string {
+  return toAscii(reference).replace(/[^A-Za-z0-9_/-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100);
+}
+
 /**
  * @param requireIban the delivery service's `cashOnDelivery.forceRequireIban`. When false, COD money
  *   goes to the seller's Allegro balance and Allegro rejects an IBAN/owner, so neither is sent.
@@ -66,7 +79,7 @@ export function buildCreateCommand(req: ShipmentRequest, settings: CarrierSettin
       deliveryMethodId,
       sender: contact(req.sender),
       receiver: { ...contact(req.receiver), point: req.pickupPointId || undefined },
-      referenceNumber: req.reference.slice(0, 100),
+      referenceNumber: allegroReferenceNumber(req.reference),
       packages: [
         {
           type: 'PACKAGE',
@@ -74,7 +87,7 @@ export function buildCreateCommand(req: ShipmentRequest, settings: CarrierSettin
           width: dim(req.parcel.widthCm),
           height: dim(req.parcel.heightCm),
           weight: { value: req.parcel.weightKg, unit: 'KILOGRAMS' },
-          textOnLabel: req.reference.slice(0, 50),
+          textOnLabel: toAscii(req.reference).slice(0, 50),
         },
       ],
       insurance: req.insuranceAmount ? { amount: req.insuranceAmount, currency: req.currency } : undefined,

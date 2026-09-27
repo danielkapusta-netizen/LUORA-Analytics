@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { allegroPhone, AllegroShippingAdapter, buildCreateCommand } from '@/server/integrations/carriers/allegro-shipping/adapter';
+import { allegroPhone, allegroReferenceNumber, AllegroShippingAdapter, buildCreateCommand } from '@/server/integrations/carriers/allegro-shipping/adapter';
 import { buildShipxPayload, InpostAdapter, sendingMethodFor } from '@/server/integrations/carriers/inpost/adapter';
 import type { ShipmentRequest } from '@/server/integrations/carriers/types';
 import { AllegroClient, type AllegroCredentials } from '@/server/integrations/marketplaces/allegro/client';
@@ -149,6 +149,14 @@ describe('Allegro Delivery (Wysyłam z Allegro)', () => {
     expect(cmd.input.deliveryMethodId).toBe('2488f7b7-5d1c-4d65-b85c-4cbcf253fd93');
     expect(cmd.input.receiver.point).toBe('KRA010');
     expect(cmd.input.packages[0]).toMatchObject({ type: 'PACKAGE', length: { value: 30, unit: 'CENTIMETER' }, weight: { value: 1.5, unit: 'KILOGRAMS' } });
+  });
+
+  it('keeps the reference number to the characters Allegro accepts (letters, digits, _/-)', () => {
+    const reference = '6B7C4270: 2x Anua PDRN 100 + Hyaluron, 1x Żel łagodzący 50%';
+    expect(allegroReferenceNumber(reference)).toBe('6B7C4270_2x_Anua_PDRN_100_Hyaluron_1x_Zel_lagodzacy_50');
+    const cmd = buildCreateCommand({ ...request, service: 'buyer_choice', reference }, {}, request.shipmentId);
+    expect(cmd.input.referenceNumber).toMatch(/^[A-Za-z0-9_/-]+$/);
+    expect(cmd.input.packages[0].textOnLabel).toBe('6B7C4270: 2x Anua PDRN 100 + Hyaluron, 1x Zel lago');
   });
 
   it('normalises phone numbers, keeping a foreign prefix (Hungary)', () => {
