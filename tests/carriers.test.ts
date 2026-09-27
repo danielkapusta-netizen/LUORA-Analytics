@@ -153,7 +153,9 @@ describe('Allegro Delivery (Wysyłam z Allegro)', () => {
 
   it('keeps the reference number to the characters Allegro accepts (letters, digits, _/-)', () => {
     const reference = '6B7C4270: 2x Anua PDRN 100 + Hyaluron, 1x Żel łagodzący 50%';
-    expect(allegroReferenceNumber(reference)).toBe('6B7C4270_2x_Anua_PDRN_100_Hyaluron_1x_Zel_lagodzacy_50');
+    expect(allegroReferenceNumber(reference)).toBe('6B7C4270_2x_Anua_PDRN_100_Hyaluron');
+    expect(allegroReferenceNumber('C53975A1: 1x Abib Glutathione Kojic Acid Eye Patch').length).toBeLessThanOrEqual(35);
+    expect(allegroReferenceNumber('AB: 1x Ż')).toBe('AB_1x_Z');
     const cmd = buildCreateCommand({ ...request, service: 'buyer_choice', reference }, {}, request.shipmentId);
     expect(cmd.input.referenceNumber).toMatch(/^[A-Za-z0-9_/-]+$/);
     expect(cmd.input.packages[0].textOnLabel).toBe('6B7C4270: 2x Anua PDRN 100 + Hyaluron, 1x Zel lago');

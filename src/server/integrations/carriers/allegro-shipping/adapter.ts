@@ -56,12 +56,18 @@ function toAscii(text: string): string {
   return text.replace(/ł/g, 'l').replace(/Ł/g, 'L').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+/** Allegro rejects longer reference numbers ("Długość podanego tekstu przekracza 35 znaków"). */
+const REFERENCE_NUMBER_MAX = 35;
+
 /**
- * Allegro accepts only letters, digits and "_/-" in referenceNumber, without diacritics, e.g.
- * "6B7C4270: 1x Anua PDRN 100 + Hyaluron" → "6B7C4270_1x_Anua_PDRN_100_Hyaluron".
+ * Allegro accepts only letters, digits and "_/-" in referenceNumber, without diacritics, and at
+ * most 35 characters, e.g. "6B7C4270: 1x Anua PDRN 100 + Hyaluron" → "6B7C4270_1x_Anua_PDRN_100_Hyaluron".
  */
 export function allegroReferenceNumber(reference: string): string {
-  return toAscii(reference).replace(/[^A-Za-z0-9_/-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100);
+  return toAscii(reference)
+    .replace(/[^A-Za-z0-9_/-]+/g, '_')
+    .slice(0, REFERENCE_NUMBER_MAX)
+    .replace(/^_+|_+$/g, '');
 }
 
 /**
