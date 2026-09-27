@@ -65,12 +65,19 @@ interface AllegroErrorItem {
   details?: string | null;
 }
 
-/** Formats Allegro's error list as "receiver.phone: Niepoprawny numer telefonu; …". */
+/**
+ * Formats Allegro's error list as "receiver.phone: Niepoprawny numer telefonu; …".
+ * A generic userMessage ("Błąd zewnętrznego przewoźnika") often hides the carrier's actual reason in
+ * `message` or `details`, so those are appended when they say something more.
+ */
 export function describeAllegroErrors(errors: AllegroErrorItem[] | undefined): string | null {
   if (!errors?.length) return null;
   return errors
     .map((e) => {
-      const text = e.userMessage || e.message || e.details || e.code || 'error';
+      const parts = [e.userMessage, e.message, e.details].map((p) => p?.trim()).filter((p): p is string => Boolean(p));
+      const unique = parts.filter((p, i) => !parts.slice(0, i).some((q) => q.includes(p) || p.includes(q)));
+      let text = unique[0] ?? e.code ?? 'error';
+      if (unique.length > 1) text += ` (${unique.slice(1).join('; ')})`;
       return e.path ? `${e.path}: ${text}` : text;
     })
     .join('; ');

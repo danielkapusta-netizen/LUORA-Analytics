@@ -246,6 +246,22 @@ describe('Allegro Delivery (Wysyłam z Allegro)', () => {
     });
   });
 
+  it('keeps the carrier’s reason when Allegro gives only a generic message', async () => {
+    server.use(
+      http.get(`${API}/shipment-management/shipments/create-commands/:id`, ({ params }) =>
+        HttpResponse.json({
+          commandId: params.id,
+          status: 'ERROR',
+          errors: [{ code: 'CARRIER_ERROR', userMessage: 'Błąd zewnętrznego przewoźnika', message: 'Błąd zewnętrznego przewoźnika', details: 'Invalid receiver phone number', path: null }],
+        }),
+      ),
+    );
+    expect(await adapter.refreshShipment({ externalId: null, commandId: 'c2' })).toMatchObject({
+      state: 'failed',
+      error: 'Błąd zewnętrznego przewoźnika (Invalid receiver phone number)',
+    });
+  });
+
   it('reports command errors', async () => {
     server.use(
       http.get(`${API}/shipment-management/shipments/create-commands/:id`, ({ params }) =>

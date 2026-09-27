@@ -172,6 +172,8 @@ export class AllegroShippingAdapter implements CarrierAdapter {
       );
       const command = response.data;
       if (command.status === 'ERROR') {
+        // Keep Allegro's full answer in the Worker logs for cases the short message can't explain.
+        console.error('[allegro-shipping] create command failed', ref.commandId, JSON.stringify(command.errors));
         const error = describeAllegroErrors(command.errors) ?? 'Allegro rejected the shipment';
         return { state: 'failed', externalId: '', commandId: ref.commandId, error };
       }
